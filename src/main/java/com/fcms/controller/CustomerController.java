@@ -1,0 +1,90 @@
+package com.fcms.controller;
+
+import com.fcms.model.Customer;
+import com.fcms.model.CustomerStatus;
+import com.fcms.model.FinanceType;
+import com.fcms.service.AuthService;
+import com.fcms.service.CustomerService;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+
+@RestController
+@RequestMapping("/api/customers")
+public class CustomerController {
+
+    private final CustomerService customerService;
+    private final AuthService authService;
+
+    public CustomerController(CustomerService customerService, AuthService authService) {
+        this.customerService = customerService;
+        this.authService = authService;
+    }
+
+    private void requireAdmin(String authHeader) {
+        String token = authHeader != null && authHeader.startsWith("Bearer ") ? authHeader.substring(7) : authHeader;
+        if (!authService.isAdmin(token)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Admin role required for this action");
+        }
+    }
+
+    @GetMapping
+    public List<Customer> getAll(
+            @RequestParam(required = false) String q,
+            @RequestParam(required = false) CustomerStatus status,
+            @RequestParam(required = false) FinanceType financeType,
+            @RequestParam(required = false) String paymentStatus,
+            @RequestParam(required = false) Boolean overdue) {
+        if (q == null && status == null && financeType == null && paymentStatus == null && overdue == null) {
+            return customerService.getAll();
+        }
+        return customerService.search(q, status, financeType, paymentStatus, overdue);
+    }
+
+    @GetMapping("/search")
+    public List<Customer> search(
+            @RequestParam(required = false) String q,
+            @RequestParam(required = false) CustomerStatus status,
+            @RequestParam(required = false) FinanceType financeType,
+            @RequestParam(required = false) String paymentStatus,
+            @RequestParam(required = false) Boolean overdue) {
+        return customerService.search(q, status, financeType, paymentStatus, overdue);
+    }
+
+    @GetMapping("/due-today")
+    public List<Customer> dueToday() {
+        return customerService.getDueToday();
+    }
+
+    @GetMapping("/{id}")
+    public ResponseEntity<Customer> getById(@PathVariable Long id) {
+        return customerService.getById(id)
+                .map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.notFound().build());
+    }
+
+    @PostMapping
+    public Customer create(@RequestBody Customer customer) {
+        return customerService.create(customer);
+    }
+
+    @PutMapping("/{id}")
+    public Customer update(@PathVariable Long id, @RequestBody Customer customer,
+                            @RequestParam(defaultValue = "system") String editedBy,
+                            @RequestParam(defaultValue = "") String reason,
+                            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        requireAdmin(authHeader);
+        return customerService.update(id, customer, editedBy, reason);
+    }
+
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> delete(@PathVariable Long id,
+                                        @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        requireAdmin(authHeader);
+        customerService.delete(id);
+        return ResponseEntity.noContent().build();
+    }
+}
