@@ -30,6 +30,11 @@ public class CustomerService {
     }
 
     public Customer create(Customer c) {
+        if (c.getGroupKey() == null || c.getGroupKey().isBlank()) {
+            c.setGroupKey(slug(c.getName()));
+        } else {
+            c.setGroupKey(slug(c.getGroupKey()));
+        }
         recomputeDerived(c);
         c.setCreatedAt(LocalDate.now().atStartOfDay());
         c.setPaidInstallments(c.getPaidInstallments() == null ? 0 : c.getPaidInstallments());
@@ -37,6 +42,21 @@ public class CustomerService {
         recomputeDerived(c);
         if (c.getStatus() == null) c.setStatus(CustomerStatus.Running);
         return customerRepository.save(c);
+    }
+
+    /**
+     * Normalizes a name/group label into a stable lookup key (lowercase, trimmed,
+     * spaces collapsed to single hyphens) so "Ranjith Kumar" and "ranjith  kumar" group together.
+     */
+    public static String slug(String s) {
+        if (s == null) return "";
+        return s.trim().toLowerCase().replaceAll("[^a-z0-9]+", "-").replaceAll("(^-+|-+$)", "");
+    }
+
+    /** All loan accounts (including this one) that belong to the same real-world person. */
+    public List<Customer> getLoansForGroup(String groupKey) {
+        if (groupKey == null || groupKey.isBlank()) return List.of();
+        return customerRepository.findAllByGroupKeyOrderByStartDateAsc(groupKey);
     }
 
     public Customer update(Long id, Customer updated, String editedBy, String reason) {
@@ -52,6 +72,11 @@ public class CustomerService {
         existing.setMobile(updated.getMobile());
         existing.setAlternateMobile(updated.getAlternateMobile());
         existing.setAddress(updated.getAddress());
+        if (updated.getGroupKey() != null && !updated.getGroupKey().isBlank()) {
+            existing.setGroupKey(slug(updated.getGroupKey()));
+        } else if (existing.getGroupKey() == null || existing.getGroupKey().isBlank()) {
+            existing.setGroupKey(slug(existing.getName()));
+        }
         existing.setFinanceAmount(updated.getFinanceAmount());
         existing.setInterest(updated.getInterest());
         existing.setStartDate(updated.getStartDate());

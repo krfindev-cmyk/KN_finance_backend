@@ -16,6 +16,14 @@ public class Customer {
     private String mobile;
     private String alternateMobile;
 
+    /**
+     * Links multiple loan accounts belonging to the same real-world person (e.g. someone who
+     * has taken a second or third loan). Defaults to a slug of the name if not set explicitly,
+     * so loans can be grouped/looked-up without requiring a full customer/loan schema split.
+     * Two customer records with the same groupKey are shown as "Other Loans" on each other's detail page.
+     */
+    private String groupKey;
+
     @Column(length = 1000)
     private String address;
 
@@ -60,6 +68,8 @@ public class Customer {
     public void setMobile(String mobile) { this.mobile = mobile; }
     public String getAlternateMobile() { return alternateMobile; }
     public void setAlternateMobile(String alternateMobile) { this.alternateMobile = alternateMobile; }
+    public String getGroupKey() { return groupKey; }
+    public void setGroupKey(String groupKey) { this.groupKey = groupKey; }
     public String getAddress() { return address; }
     public void setAddress(String address) { this.address = address; }
     public Double getFinanceAmount() { return financeAmount; }

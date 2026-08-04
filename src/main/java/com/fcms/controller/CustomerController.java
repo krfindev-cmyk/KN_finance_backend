@@ -59,6 +59,16 @@ public class CustomerController {
         return customerService.getDueToday();
     }
 
+    /** Other loan accounts belonging to the same person as customer {id} (multiple-loans-per-person support). */
+    @GetMapping("/{id}/other-loans")
+    public List<Customer> otherLoans(@PathVariable Long id) {
+        Customer c = customerService.getById(id).orElse(null);
+        if (c == null || c.getGroupKey() == null) return List.of();
+        return customerService.getLoansForGroup(c.getGroupKey()).stream()
+                .filter(o -> !o.getId().equals(id))
+                .toList();
+    }
+
     @GetMapping("/{id}")
     public ResponseEntity<Customer> getById(@PathVariable Long id) {
         return customerService.getById(id)
