@@ -1,6 +1,7 @@
 package com.fcms.controller;
 
 import com.fcms.dto.PaymentEditRequest;
+import com.fcms.dto.TimelineEntry;
 import com.fcms.model.Payment;
 import com.fcms.service.AuthService;
 import com.fcms.service.PaymentService;
@@ -37,6 +38,12 @@ public class PaymentController {
     @GetMapping("/customer/{customerId}")
     public List<Payment> getByCustomer(@PathVariable Long customerId) {
         return paymentService.getByCustomer(customerId);
+    }
+
+    /** Full day-by-day (or week-by-week) installment schedule for one loan, merged with actual payments. */
+    @GetMapping("/customer/{customerId}/timeline")
+    public List<TimelineEntry> getTimeline(@PathVariable Long customerId) {
+        return paymentService.getTimeline(customerId);
     }
 
     @PostMapping

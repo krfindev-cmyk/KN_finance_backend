@@ -7,6 +7,7 @@ import com.fcms.repository.CustomerRepository;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
+import java.time.LocalTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -143,12 +144,23 @@ public class CustomerService {
     /**
      * Customers whose next payment is due today or is overdue (nextDueDate < today),
      * restricted to Running status. Used for the "Quick Collection" due-today list.
+     *
+     * Loans that are overdue (nextDueDate before today) are always shown, since collection
+     * of a missed day can happen any time. A loan whose payment is due exactly today only
+     * becomes visible on Quick Collection after 12:00 noon, so collectors aren't shown
+     * "today's" installment before the day's collection round has actually started.
      */
     public List<Customer> getDueToday() {
         LocalDate today = LocalDate.now();
+        boolean todayVisible = !LocalTime.now().isBefore(LocalTime.NOON);
         return customerRepository.findAll().stream()
                 .filter(c -> c.getStatus() == CustomerStatus.Running)
-                .filter(c -> c.getNextDueDate() != null && !c.getNextDueDate().isAfter(today))
+                .filter(c -> c.getNextDueDate() != null)
+                .filter(c -> {
+                    if (c.getNextDueDate().isBefore(today)) return true;
+                    if (c.getNextDueDate().isEqual(today)) return todayVisible;
+                    return false;
+                })
                 .toList();
     }
 

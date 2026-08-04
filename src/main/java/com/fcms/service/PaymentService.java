@@ -1,13 +1,19 @@
 package com.fcms.service;
 
 import com.fcms.dto.PaymentEditRequest;
+import com.fcms.dto.TimelineEntry;
 import com.fcms.model.*;
 import com.fcms.repository.CustomerRepository;
 import com.fcms.repository.PaymentRepository;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 @Service
 public class PaymentService {
@@ -31,6 +37,55 @@ public class PaymentService {
 
     public List<Payment> getAll() {
         return paymentRepository.findAll();
+    }
+
+    /**
+     * Full installment-by-installment schedule for one loan (e.g. all 100 days for a
+     * Rs. 1,00,000 / Rs. 1,000-a-day Daily loan), merged with whatever payments were actually
+     * recorded. Days before today with no matching payment show as "Missed"; today with no
+     * payment yet shows as "Due"; days after today show as "Pending".
+     */
+    public List<TimelineEntry> getTimeline(Long customerId) {
+        Customer customer = customerRepository.findById(customerId)
+                .orElseThrow(() -> new IllegalArgumentException("Customer not found"));
+
+        List<TimelineEntry> entries = new ArrayList<>();
+        if (customer.getStartDate() == null || customer.getTotalInstallments() == null) {
+            return entries;
+        }
+
+        LocalDate today = LocalDate.now();
+
+        // Group recorded payments by date so multiple payments on the same day (e.g. a Partial
+        // followed later by a top-up) are both surfaced against that installment slot.
+        List<Payment> payments = paymentRepository.findByCustomerIdOrderByDateDesc(customerId);
+        Map<LocalDate, List<Payment>> byDate = payments.stream()
+                .filter(p -> p.getDate() != null)
+                .collect(Collectors.groupingBy(Payment::getDate));
+
+        for (int i = 0; i < customer.getTotalInstallments(); i++) {
+            LocalDate slotDate = customer.getFinanceType() == FinanceType.Weekly
+                    ? customer.getStartDate().plusWeeks(i)
+                    : customer.getStartDate().plusDays(i);
+
+            List<Payment> onDate = byDate.get(slotDate);
+            boolean isToday = slotDate.isEqual(today);
+
+            if (onDate != null && !onDate.isEmpty()) {
+                Payment latest = onDate.stream()
+                        .max(Comparator.comparing(Payment::getId))
+                        .orElse(onDate.get(0));
+                entries.add(new TimelineEntry(i + 1, slotDate, latest.getType().name(), latest.getAmount(), latest.getId(), isToday));
+            } else if (slotDate.isAfter(today)) {
+                entries.add(new TimelineEntry(i + 1, slotDate, "Pending", null, null, false));
+            } else if (isToday) {
+                entries.add(new TimelineEntry(i + 1, slotDate, "Due", null, null, true));
+            } else {
+                entries.add(new TimelineEntry(i + 1, slotDate, "Missed", 0.0, null, false));
+            }
+        }
+
+        return entries;
     }
 
     public Payment recordPayment(Payment payment) {
