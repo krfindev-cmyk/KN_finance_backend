@@ -48,6 +48,8 @@ public class Customer {
     private LocalDate nextDueDate;
     private LocalDate lastPaymentDate;
     private Double lastPaymentAmount;
+    /** Type (Paid/Partial/NotPaid/Advance) of the most recently recorded payment for this loan — drives the payment-status filter on the Customers list. */
+    private String lastPaymentType;
 
     /** Estimated completion date: startDate + totalInstallments periods (days for Daily, weeks for Weekly). Recomputed server-side. */
     private LocalDate endDate;
@@ -102,10 +104,33 @@ public class Customer {
     public void setLastPaymentDate(LocalDate lastPaymentDate) { this.lastPaymentDate = lastPaymentDate; }
     public Double getLastPaymentAmount() { return lastPaymentAmount; }
     public void setLastPaymentAmount(Double lastPaymentAmount) { this.lastPaymentAmount = lastPaymentAmount; }
+    public String getLastPaymentType() { return lastPaymentType; }
+    public void setLastPaymentType(String lastPaymentType) { this.lastPaymentType = lastPaymentType; }
     public LocalDate getEndDate() { return endDate; }
     public void setEndDate(LocalDate endDate) { this.endDate = endDate; }
     public CustomerStatus getStatus() { return status; }
     public void setStatus(CustomerStatus status) { this.status = status; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+
+    /**
+     * Self-heal older/imported rows that predate the 100-installment default (e.g. rows
+     * inserted directly via SQL without totalInstallments/installmentAmount set). This only
+     * fixes the in-memory object returned from a read — it doesn't rewrite the row — so the
+     * "Installments Paid" stat never shows "x / null" and installment amount never shows
+     * Rs. 0 for a loan that actually has a finance amount.
+     */
+    @PostLoad
+    private void applyLoanDefaults() {
+        if (totalInstallments == null || totalInstallments <= 0) {
+            totalInstallments = 100;
+        }
+        if ((installmentAmount == null || installmentAmount <= 0) && financeAmount != null && totalInstallments > 0) {
+            double base = financeAmount + (financeAmount * (interest == null ? 0 : interest) / 100.0);
+            installmentAmount = Math.round((base / totalInstallments) * 100.0) / 100.0;
+        }
+        if (paidInstallments == null) {
+            paidInstallments = 0;
+        }
+    }
 }

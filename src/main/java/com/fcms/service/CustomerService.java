@@ -7,7 +7,7 @@ import com.fcms.repository.CustomerRepository;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
-import java.time.LocalTime;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Optional;
 
@@ -102,10 +102,20 @@ public class CustomerService {
     }
 
     public void recomputeDerived(Customer c) {
+        // Every loan defaults to a 100-installment schedule (e.g. Rs. 1,00,000 => Rs. 1,000/day
+        // for 100 days) unless the caller explicitly set a different totalInstallments.
+        if (c.getTotalInstallments() == null || c.getTotalInstallments() <= 0) {
+            c.setTotalInstallments(100);
+        }
+
         double financeAmount = c.getFinanceAmount() == null ? 0 : c.getFinanceAmount();
         double interest = c.getInterest() == null ? 0 : c.getInterest();
         double totalAmount = financeAmount + (financeAmount * interest / 100.0);
         c.setTotalAmount(totalAmount);
+
+        if (c.getInstallmentAmount() == null || c.getInstallmentAmount() <= 0) {
+            c.setInstallmentAmount(Math.round((totalAmount / c.getTotalInstallments()) * 100.0) / 100.0);
+        }
 
         double totalPaid = c.getTotalPaid() == null ? 0 : c.getTotalPaid();
         double pending = Math.max(0, totalAmount - totalPaid);
@@ -141,26 +151,22 @@ public class CustomerService {
         return from.plusDays(periods);
     }
 
+    /** Indian Standard Time — the day rolls over (and today's collections appear) at 12:00 AM IST, regardless of the server's own timezone. */
+    private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
+
     /**
      * Customers whose next payment is due today or is overdue (nextDueDate < today),
      * restricted to Running status. Used for the "Quick Collection" due-today list.
      *
-     * Loans that are overdue (nextDueDate before today) are always shown, since collection
-     * of a missed day can happen any time. A loan whose payment is due exactly today only
-     * becomes visible on Quick Collection after 12:00 noon, so collectors aren't shown
-     * "today's" installment before the day's collection round has actually started.
+     * "Today" is always computed in IST so the list refreshes at 12:00 AM India time no
+     * matter where the backend server itself is hosted/deployed. Overdue loans (nextDueDate
+     * before today) and loans due exactly today are both shown as soon as the day starts.
      */
     public List<Customer> getDueToday() {
-        LocalDate today = LocalDate.now();
-        boolean todayVisible = !LocalTime.now().isBefore(LocalTime.NOON);
+        LocalDate today = LocalDate.now(IST);
         return customerRepository.findAll().stream()
                 .filter(c -> c.getStatus() == CustomerStatus.Running)
-                .filter(c -> c.getNextDueDate() != null)
-                .filter(c -> {
-                    if (c.getNextDueDate().isBefore(today)) return true;
-                    if (c.getNextDueDate().isEqual(today)) return todayVisible;
-                    return false;
-                })
+                .filter(c -> c.getNextDueDate() != null && !c.getNextDueDate().isAfter(today))
                 .toList();
     }
 
@@ -169,7 +175,7 @@ public class CustomerService {
      */
     public List<Customer> search(String q, CustomerStatus status, FinanceType financeType,
                                   String paymentStatus, Boolean overdue) {
-        LocalDate today = LocalDate.now();
+        LocalDate today = LocalDate.now(IST);
         String qLower = (q == null || q.isBlank()) ? null : q.trim().toLowerCase();
 
         return customerRepository.findAll().stream()
@@ -179,11 +185,10 @@ public class CustomerService {
                 .filter(c -> status == null || c.getStatus() == status)
                 .filter(c -> financeType == null || c.getFinanceType() == financeType)
                 .filter(c -> {
+                    // Filters by the type of the most recently recorded payment on the loan
+                    // (Paid / Partial / NotPaid / Advance) — i.e. "who did we mark as X last time".
                     if (paymentStatus == null || paymentStatus.isBlank()) return true;
-                    double pending = c.getPendingAmount() == null ? 0 : c.getPendingAmount();
-                    if ("Paid".equalsIgnoreCase(paymentStatus)) return pending <= 0;
-                    if ("Pending".equalsIgnoreCase(paymentStatus)) return pending > 0;
-                    return true;
+                    return paymentStatus.equalsIgnoreCase(c.getLastPaymentType());
                 })
                 .filter(c -> {
                     if (overdue == null) return true;

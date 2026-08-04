@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -54,7 +55,7 @@ public class PaymentService {
             return entries;
         }
 
-        LocalDate today = LocalDate.now();
+        LocalDate today = LocalDate.now(ZoneId.of("Asia/Kolkata"));
 
         // Group recorded payments by date so multiple payments on the same day (e.g. a Partial
         // followed later by a top-up) are both surfaced against that installment slot.
@@ -96,6 +97,10 @@ public class PaymentService {
                 .orElseThrow(() -> new IllegalArgumentException("Customer not found"));
 
         double amt = payment.getAmount() == null ? 0 : payment.getAmount();
+
+        // Drives the "Payment Status" filter on the Customers list (Paid / Partial / NotPaid / Advance),
+        // independent of whether the payment counts toward totalPaid.
+        customer.setLastPaymentType(payment.getType().name());
 
         if (payment.getType() == PaymentType.Paid || payment.getType() == PaymentType.Partial
                 || payment.getType() == PaymentType.Advance) {
