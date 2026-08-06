@@ -43,8 +43,10 @@ public class PaymentService {
     /**
      * Full installment-by-installment schedule for one loan (e.g. all 100 days for a
      * Rs. 1,00,000 / Rs. 1,000-a-day Daily loan), merged with whatever payments were actually
-     * recorded. Days before today with no matching payment show as "Missed"; today with no
-     * payment yet shows as "Due"; days after today show as "Pending".
+     * recorded. Days before today with no matching payment show as "NotMarked" (nobody ever
+     * recorded anything for that day — distinct from an explicit "NotPaid" marking, which means
+     * a collector visited and the customer genuinely didn't pay); today with no payment yet
+     * shows as "Due"; days after today show as "Pending".
      */
     public List<TimelineEntry> getTimeline(Long customerId) {
         Customer customer = customerRepository.findById(customerId)
@@ -82,7 +84,7 @@ public class PaymentService {
             } else if (isToday) {
                 entries.add(new TimelineEntry(i + 1, slotDate, "Due", null, null, true));
             } else {
-                entries.add(new TimelineEntry(i + 1, slotDate, "Missed", 0.0, null, false));
+                entries.add(new TimelineEntry(i + 1, slotDate, "NotMarked", null, null, false));
             }
         }
 
