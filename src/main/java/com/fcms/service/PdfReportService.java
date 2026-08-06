@@ -145,28 +145,35 @@ public class PdfReportService {
             PDPageContentStream stream = new PDPageContentStream(document, page);
             float cursorY = pageHeight - margin;
 
-            // ---- Brand header ----
-            cursorY = drawLine(stream, margin, cursorY, "KR Finance", PDType1Font.HELVETICA_BOLD, 20, Color.BLACK, 26);
-            cursorY = drawLine(stream, margin, cursorY, "Daily Collection Report", PDType1Font.HELVETICA_BOLD, 13, Color.DARK_GRAY, 18);
-            cursorY = drawLine(stream, margin, cursorY, "Date: " + report.getDate(), PDType1Font.HELVETICA, 11, Color.BLACK, 18);
-            cursorY -= 6;
+            // ---- Brand header banner ----
+            stream.setNonStrokingColor(PdfTableWriter.BRAND_COLOR);
+            stream.addRect(margin - 10, cursorY - 32, usableWidth + 20, 58);
+            stream.fill();
+            cursorY = drawLine(stream, margin, cursorY, "KR Finance", PDType1Font.HELVETICA_BOLD, 20, Color.WHITE, 22);
+            cursorY = drawLine(stream, margin, cursorY, "Daily Collection Report  |  " + report.getDate(), PDType1Font.HELVETICA, 11, new Color(219, 234, 254), 24);
+            cursorY -= 22;
 
-            // ---- Summary ----
-            cursorY = drawLine(stream, margin, cursorY,
-                    "Total to Collect Today: " + fmt(report.getTotalToCollect())
-                            + "     Total Collected Today: " + fmt(report.getTotalCollected())
-                            + "     Total Not Collected: " + fmt(report.getTotalNotCollected()),
-                    PDType1Font.HELVETICA_BOLD, 11, Color.BLACK, 16);
-            cursorY = drawLine(stream, margin, cursorY,
-                    "Paid: " + report.getPaidCount()
-                            + "     Not Paid: " + report.getNotPaidCount()
-                            + "     Partial: " + report.getPartialCount()
-                            + "     Advance: " + report.getAdvanceCount(),
-                    PDType1Font.HELVETICA, 11, Color.BLACK, 22);
+            // ---- Summary "stat cards" — mirrors the dashboard's own summary tiles ----
+            float cardGap = 10f;
+            float cardWidth = (usableWidth - 2 * cardGap) / 3f;
+            float cardHeight = 46f;
+            cursorY = drawStatCards(stream, margin, cursorY, cardWidth, cardHeight, cardGap,
+                    new String[]{"To Collect Today", "Collected Today", "Not Collected"},
+                    new String[]{fmt(report.getTotalToCollect()), fmt(report.getTotalCollected()), fmt(report.getTotalNotCollected())},
+                    new Color[]{PdfTableWriter.ADVANCE_COLOR, PdfTableWriter.PAID_COLOR, PdfTableWriter.PENDING_COLOR});
+            cursorY -= 14;
+
+            // ---- Status breakdown pills ----
+            cursorY = drawPillRow(stream, margin, cursorY,
+                    new String[]{"Paid " + report.getPaidCount(), "Not Paid " + report.getNotPaidCount(),
+                            "Partial " + report.getPartialCount(), "Advance " + report.getAdvanceCount()},
+                    new Color[]{PdfTableWriter.PAID_COLOR, PdfTableWriter.PENDING_COLOR, PdfTableWriter.PARTIAL_COLOR, PdfTableWriter.ADVANCE_COLOR});
+            cursorY -= 12;
 
             // ---- Table header ----
-            cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.BLACK);
+            cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0);
 
+            int rowIdx = 0;
             for (DailyReportRow row : report.getRows()) {
                 if (cursorY - rowHeight < margin) {
                     stream.close();
@@ -174,10 +181,11 @@ public class PdfReportService {
                     document.addPage(page);
                     stream = new PDPageContentStream(document, page);
                     cursorY = pageHeight - margin;
-                    cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.BLACK);
+                    cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0);
+                    rowIdx = 0;
                 }
-                Color bg = statusColor(row.getTodayStatus());
-                Color text = bg == PdfTableWriter.WHITE ? Color.BLACK : Color.WHITE;
+                Color statusColor = statusColor(row.getTodayStatus());
+                boolean isStatus = statusColor != PdfTableWriter.WHITE;
                 String[] values = {
                         safe(row.getName()),
                         fmt(row.getTotalLoanAmount()),
@@ -187,8 +195,19 @@ public class PdfReportService {
                         (row.getDaysPaid() == null ? "0" : row.getDaysPaid()) + "/" + (row.getTotalInstallments() == null ? "-" : row.getTotalInstallments()),
                         safe(row.getTodayStatus())
                 };
-                cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, values, PDType1Font.HELVETICA, bg, text);
+                cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, values, PDType1Font.HELVETICA, statusColor, isStatus ? statusColor : Color.BLACK, isStatus, rowIdx);
+                rowIdx++;
             }
+
+            cursorY -= 8;
+            if (cursorY - 16 < margin) {
+                stream.close();
+                page = new PDPage(PDRectangle.A4);
+                document.addPage(page);
+                stream = new PDPageContentStream(document, page);
+                cursorY = pageHeight - margin;
+            }
+            drawLine(stream, margin, cursorY, "Generated by KR Finance", PDType1Font.HELVETICA_OBLIQUE, 8, Color.GRAY, 12);
             stream.close();
 
             document.save(out);
@@ -196,6 +215,49 @@ public class PdfReportService {
         } catch (IOException e) {
             throw new RuntimeException("Failed to generate daily collection PDF", e);
         }
+    }
+
+    /** Three dashboard-style summary tiles side by side: label on top, big bold value, colored accent bar. */
+    private float drawStatCards(PDPageContentStream stream, float margin, float cursorY, float cardWidth, float cardHeight,
+                                 float gap, String[] labels, String[] values, Color[] accents) throws IOException {
+        float x = margin;
+        for (int i = 0; i < labels.length; i++) {
+            stream.setNonStrokingColor(new Color(248, 250, 252));
+            stream.addRect(x, cursorY - cardHeight, cardWidth, cardHeight);
+            stream.fill();
+            stream.setNonStrokingColor(accents[i]);
+            stream.addRect(x, cursorY - cardHeight, cardWidth, 3);
+            stream.fill();
+            drawLine(stream, x + 8, cursorY - 15, labels[i], PDType1Font.HELVETICA, 8, Color.GRAY, 0);
+            drawLine(stream, x + 8, cursorY - 34, "Rs. " + values[i], PDType1Font.HELVETICA_BOLD, 13, Color.BLACK, 0);
+            x += cardWidth + gap;
+        }
+        return cursorY - cardHeight;
+    }
+
+    /** Small rounded-looking status-count badges (Paid / Not Paid / Partial / Advance). */
+    private float drawPillRow(PDPageContentStream stream, float margin, float cursorY, String[] labels, Color[] colors) throws IOException {
+        float x = margin;
+        float pillHeight = 18f;
+        for (int i = 0; i < labels.length; i++) {
+            float pillWidth = 14 + labels[i].length() * 5.2f;
+            stream.setNonStrokingColor(tint(colors[i], 0.85f));
+            stream.addRect(x, cursorY - pillHeight, pillWidth, pillHeight);
+            stream.fill();
+            stream.setNonStrokingColor(colors[i]);
+            stream.addRect(x, cursorY - pillHeight, 3, pillHeight);
+            stream.fill();
+            drawLine(stream, x + 8, cursorY - 13, labels[i], PDType1Font.HELVETICA_BOLD, 9, colors[i], 0);
+            x += pillWidth + 8;
+        }
+        return cursorY - pillHeight;
+    }
+
+    private Color tint(Color c, float towardsWhite) {
+        int r = (int) (c.getRed() + (255 - c.getRed()) * towardsWhite);
+        int g = (int) (c.getGreen() + (255 - c.getGreen()) * towardsWhite);
+        int b = (int) (c.getBlue() + (255 - c.getBlue()) * towardsWhite);
+        return new Color(r, g, b);
     }
 
     private Color statusColor(String status) {
@@ -220,16 +282,37 @@ public class PdfReportService {
         return y - advance;
     }
 
+    /**
+     * isStatus rows (Paid/NotPaid/Partial/Advance) get a soft tinted background + colored left
+     * accent bar + colored text, like a dashboard status badge. Non-status rows get plain
+     * white/zebra-striped backgrounds so the long customer list stays easy to scan.
+     */
     private float drawTableRow(PDPageContentStream stream, float margin, float cursorY, float rowHeight, float[] colWidths,
-                                String[] values, org.apache.pdfbox.pdmodel.font.PDFont font, Color bg, Color textColor) throws IOException {
+                                String[] values, org.apache.pdfbox.pdmodel.font.PDFont font, Color bg, Color textColor,
+                                boolean isStatus, int rowIndex) throws IOException {
         float x = margin;
-        if (bg != null) {
+        float totalWidth = 0;
+        for (float w : colWidths) totalWidth += w;
+
+        boolean isHeader = bg != null && bg.equals(PdfTableWriter.HEADER_COLOR);
+        Color rowBg;
+        if (isHeader) {
+            rowBg = bg;
+        } else if (isStatus) {
+            rowBg = tint(bg, 0.88f);
+        } else {
+            rowBg = (rowIndex % 2 == 1) ? new Color(248, 250, 252) : Color.WHITE;
+        }
+        stream.setNonStrokingColor(rowBg);
+        stream.addRect(margin, cursorY - rowHeight + 4, totalWidth, rowHeight - 2);
+        stream.fill();
+
+        if (isStatus) {
             stream.setNonStrokingColor(bg);
-            float totalWidth = 0;
-            for (float w : colWidths) totalWidth += w;
-            stream.addRect(margin, cursorY - rowHeight + 4, totalWidth, rowHeight - 2);
+            stream.addRect(margin, cursorY - rowHeight + 4, 3, rowHeight - 2);
             stream.fill();
         }
+
         for (int i = 0; i < values.length && i < colWidths.length; i++) {
             String v = values[i] == null ? "" : values[i];
             int maxChars = Math.max(3, (int) (colWidths[i] / 5.0));
@@ -237,7 +320,7 @@ public class PdfReportService {
             stream.beginText();
             stream.setFont(font, 9);
             stream.setNonStrokingColor(textColor);
-            stream.newLineAtOffset(x + 2, cursorY - rowHeight + 8);
+            stream.newLineAtOffset(x + 4, cursorY - rowHeight + 8);
             stream.showText(sanitize(v));
             stream.endText();
             x += colWidths[i];

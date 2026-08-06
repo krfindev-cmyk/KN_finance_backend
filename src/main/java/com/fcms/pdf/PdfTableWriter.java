@@ -28,7 +28,10 @@ public class PdfTableWriter {
     public static final Color PENDING_COLOR = new Color(220, 38, 38);
     public static final Color PARTIAL_COLOR = new Color(217, 119, 6);
     public static final Color ADVANCE_COLOR = new Color(37, 99, 235);
-    public static final Color HEADER_COLOR = new Color(230, 230, 230);
+    /** Dark slate banner used for table headers — brand-consistent with the app's premium look. */
+    public static final Color HEADER_COLOR = new Color(30, 41, 59);
+    public static final Color BRAND_COLOR = new Color(37, 99, 235);
+    public static final Color ZEBRA_COLOR = new Color(248, 250, 252);
     public static final Color WHITE = Color.WHITE;
 
     private final PDDocument document;
@@ -39,6 +42,7 @@ public class PdfTableWriter {
     private PDPageContentStream stream;
     private float cursorY;
     private String title;
+    private int rowIndex = 0;
 
     public PdfTableWriter(PDDocument document, String title, String[] headers, int[] colWidths) throws IOException {
         this.document = document;
@@ -63,11 +67,17 @@ public class PdfTableWriter {
         cursorY = PAGE_HEIGHT - MARGIN;
 
         if (title != null) {
-            drawText(stream, MARGIN, cursorY, title, PDType1Font.HELVETICA_BOLD, 14, Color.BLACK);
-            cursorY -= 24;
+            // Brand banner behind the report title, like the app's own header bar.
+            stream.setNonStrokingColor(BRAND_COLOR);
+            stream.addRect(MARGIN - 10, cursorY - 6, sum(absColWidths) + 20, 34);
+            stream.fill();
+            drawText(stream, MARGIN, cursorY + 6, "KR Finance", PDType1Font.HELVETICA_BOLD, 15, Color.WHITE);
+            drawText(stream, MARGIN, cursorY - 10, title, PDType1Font.HELVETICA, 10, new Color(219, 234, 254));
+            cursorY -= 46;
             title = null; // only print title on first page
         }
-        drawRow(headers, PDType1Font.HELVETICA_BOLD, HEADER_COLOR, Color.BLACK);
+        rowIndex = 0;
+        drawRow(headers, PDType1Font.HELVETICA_BOLD, HEADER_COLOR, Color.WHITE);
     }
 
     public void addRow(String[] values, Color bgColor, Color textColor) throws IOException {
@@ -80,16 +90,45 @@ public class PdfTableWriter {
     private void drawRow(String[] values, PDFont font, Color bgColor, Color textColor) throws IOException {
         float x = MARGIN;
         float rowTop = cursorY;
-        if (bgColor != null) {
-            stream.setNonStrokingColor(bgColor);
+        boolean isHeaderRow = bgColor != null && bgColor.equals(HEADER_COLOR);
+        boolean isStatusRow = bgColor != null && !isHeaderRow && !bgColor.equals(WHITE);
+
+        Color rowBg = bgColor;
+        Color rowText = textColor;
+        if (isStatusRow) {
+            // Softer "badge tint" background instead of a solid saturated fill, with the
+            // original status color kept for the text and a small accent bar on the left —
+            // reads like a dashboard status pill rather than a highlighter-block row.
+            rowBg = tint(bgColor, 0.88f);
+            rowText = bgColor;
+        } else if (!isHeaderRow) {
+            // Subtle zebra striping for plain rows so long tables stay easy to scan.
+            rowBg = (rowIndex % 2 == 1) ? ZEBRA_COLOR : WHITE;
+        }
+
+        if (rowBg != null) {
+            stream.setNonStrokingColor(rowBg);
             stream.addRect(MARGIN, rowTop - ROW_HEIGHT + 4, sum(absColWidths), ROW_HEIGHT - 2);
             stream.fill();
         }
+        if (isStatusRow) {
+            stream.setNonStrokingColor(bgColor);
+            stream.addRect(MARGIN, rowTop - ROW_HEIGHT + 4, 3, ROW_HEIGHT - 2);
+            stream.fill();
+        }
         for (int i = 0; i < values.length && i < absColWidths.length; i++) {
-            drawText(stream, x + 2, rowTop - ROW_HEIGHT + 8, truncate(values[i], absColWidths[i], font), font, 9, textColor);
+            drawText(stream, x + 4, rowTop - ROW_HEIGHT + 8, truncate(values[i], absColWidths[i], font), font, 9, rowText);
             x += absColWidths[i];
         }
         cursorY -= ROW_HEIGHT;
+        if (!isHeaderRow) rowIndex++;
+    }
+
+    private Color tint(Color c, float towardsWhite) {
+        int r = (int) (c.getRed() + (255 - c.getRed()) * towardsWhite);
+        int g = (int) (c.getGreen() + (255 - c.getGreen()) * towardsWhite);
+        int b = (int) (c.getBlue() + (255 - c.getBlue()) * towardsWhite);
+        return new Color(r, g, b);
     }
 
     private String truncate(String value, float width, PDFont font) {
