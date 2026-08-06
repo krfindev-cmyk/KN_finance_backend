@@ -1,5 +1,7 @@
 package com.fcms.service;
 
+import com.fcms.dto.DailyReport;
+import com.fcms.dto.DailyReportRow;
 import com.fcms.model.Customer;
 import com.fcms.model.CustomerStatus;
 import com.fcms.model.Payment;
@@ -8,6 +10,10 @@ import com.fcms.pdf.PdfTableWriter;
 import com.fcms.repository.CustomerRepository;
 import com.fcms.repository.PaymentRepository;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDPageContentStream;
+import org.apache.pdfbox.pdmodel.common.PDRectangle;
+import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.springframework.stereotype.Service;
 
 import java.awt.Color;
@@ -25,10 +31,12 @@ public class PdfReportService {
 
     private final CustomerRepository customerRepository;
     private final PaymentRepository paymentRepository;
+    private final ReportService reportService;
 
-    public PdfReportService(CustomerRepository customerRepository, PaymentRepository paymentRepository) {
+    public PdfReportService(CustomerRepository customerRepository, PaymentRepository paymentRepository, ReportService reportService) {
         this.customerRepository = customerRepository;
         this.paymentRepository = paymentRepository;
+        this.reportService = reportService;
     }
 
     private Color colorFor(PaymentType type) {
@@ -107,9 +115,141 @@ public class PdfReportService {
         }
     }
 
+    /**
+     * The main "hand this to the collector" daily report: KR Finance header, today's date,
+     * an at-a-glance summary (how much was due, how much came in, how much is still short,
+     * and a Paid/Not Paid/Partial/Advance breakdown), then one row per running customer with
+     * their loan total, cumulative paid, remaining balance, daily installment, how many days
+     * they've paid so far, and whether today is marked yet.
+     */
     public byte[] dailyCollection(LocalDate date) {
-        List<Payment> payments = paymentRepository.findByDate(date);
-        return collectionReport("Daily Collection Report - " + date, payments);
+        DailyReport report = reportService.dailyReport(date);
+
+        float margin = 40f;
+        float rowHeight = 18f;
+        float pageWidth = PDRectangle.A4.getWidth();
+        float pageHeight = PDRectangle.A4.getHeight();
+        int[] colUnits = {22, 14, 14, 14, 14, 10, 12};
+        String[] headers = {"Name", "Loan Amt", "Total Paid", "Balance", "Daily Amt", "Days Paid", "Today"};
+        int totalUnits = 0;
+        for (int u : colUnits) totalUnits += u;
+        float usableWidth = pageWidth - 2 * margin;
+        float[] colWidths = new float[colUnits.length];
+        for (int i = 0; i < colUnits.length; i++) colWidths[i] = usableWidth * colUnits[i] / (float) totalUnits;
+
+        try (ByteArrayOutputStream out = new ByteArrayOutputStream();
+             PDDocument document = new PDDocument()) {
+
+            PDPage page = new PDPage(PDRectangle.A4);
+            document.addPage(page);
+            PDPageContentStream stream = new PDPageContentStream(document, page);
+            float cursorY = pageHeight - margin;
+
+            // ---- Brand header ----
+            cursorY = drawLine(stream, margin, cursorY, "KR Finance", PDType1Font.HELVETICA_BOLD, 20, Color.BLACK, 26);
+            cursorY = drawLine(stream, margin, cursorY, "Daily Collection Report", PDType1Font.HELVETICA_BOLD, 13, Color.DARK_GRAY, 18);
+            cursorY = drawLine(stream, margin, cursorY, "Date: " + report.getDate(), PDType1Font.HELVETICA, 11, Color.BLACK, 18);
+            cursorY -= 6;
+
+            // ---- Summary ----
+            cursorY = drawLine(stream, margin, cursorY,
+                    "Total to Collect Today: " + fmt(report.getTotalToCollect())
+                            + "     Total Collected Today: " + fmt(report.getTotalCollected())
+                            + "     Total Not Collected: " + fmt(report.getTotalNotCollected()),
+                    PDType1Font.HELVETICA_BOLD, 11, Color.BLACK, 16);
+            cursorY = drawLine(stream, margin, cursorY,
+                    "Paid: " + report.getPaidCount()
+                            + "     Not Paid: " + report.getNotPaidCount()
+                            + "     Partial: " + report.getPartialCount()
+                            + "     Advance: " + report.getAdvanceCount(),
+                    PDType1Font.HELVETICA, 11, Color.BLACK, 22);
+
+            // ---- Table header ----
+            cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.BLACK);
+
+            for (DailyReportRow row : report.getRows()) {
+                if (cursorY - rowHeight < margin) {
+                    stream.close();
+                    page = new PDPage(PDRectangle.A4);
+                    document.addPage(page);
+                    stream = new PDPageContentStream(document, page);
+                    cursorY = pageHeight - margin;
+                    cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.BLACK);
+                }
+                Color bg = statusColor(row.getTodayStatus());
+                Color text = bg == PdfTableWriter.WHITE ? Color.BLACK : Color.WHITE;
+                String[] values = {
+                        safe(row.getName()),
+                        fmt(row.getTotalLoanAmount()),
+                        fmt(row.getTotalPaid()),
+                        fmt(row.getBalanceAmount()),
+                        fmt(row.getDailyCollection()),
+                        (row.getDaysPaid() == null ? "0" : row.getDaysPaid()) + "/" + (row.getTotalInstallments() == null ? "-" : row.getTotalInstallments()),
+                        safe(row.getTodayStatus())
+                };
+                cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, values, PDType1Font.HELVETICA, bg, text);
+            }
+            stream.close();
+
+            document.save(out);
+            return out.toByteArray();
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to generate daily collection PDF", e);
+        }
+    }
+
+    private Color statusColor(String status) {
+        if (status == null) return PdfTableWriter.WHITE;
+        return switch (status) {
+            case "Paid" -> PdfTableWriter.PAID_COLOR;
+            case "NotPaid" -> PdfTableWriter.PENDING_COLOR;
+            case "Partial" -> PdfTableWriter.PARTIAL_COLOR;
+            case "Advance" -> PdfTableWriter.ADVANCE_COLOR;
+            default -> PdfTableWriter.WHITE; // Pending / Not Due Yet
+        };
+    }
+
+    private float drawLine(PDPageContentStream stream, float x, float y, String text, org.apache.pdfbox.pdmodel.font.PDFont font,
+                            float size, Color color, float advance) throws IOException {
+        stream.beginText();
+        stream.setFont(font, size);
+        stream.setNonStrokingColor(color);
+        stream.newLineAtOffset(x, y);
+        stream.showText(sanitize(text));
+        stream.endText();
+        return y - advance;
+    }
+
+    private float drawTableRow(PDPageContentStream stream, float margin, float cursorY, float rowHeight, float[] colWidths,
+                                String[] values, org.apache.pdfbox.pdmodel.font.PDFont font, Color bg, Color textColor) throws IOException {
+        float x = margin;
+        if (bg != null) {
+            stream.setNonStrokingColor(bg);
+            float totalWidth = 0;
+            for (float w : colWidths) totalWidth += w;
+            stream.addRect(margin, cursorY - rowHeight + 4, totalWidth, rowHeight - 2);
+            stream.fill();
+        }
+        for (int i = 0; i < values.length && i < colWidths.length; i++) {
+            String v = values[i] == null ? "" : values[i];
+            int maxChars = Math.max(3, (int) (colWidths[i] / 5.0));
+            if (v.length() > maxChars) v = v.substring(0, maxChars - 1) + "...";
+            stream.beginText();
+            stream.setFont(font, 9);
+            stream.setNonStrokingColor(textColor);
+            stream.newLineAtOffset(x + 2, cursorY - rowHeight + 8);
+            stream.showText(sanitize(v));
+            stream.endText();
+            x += colWidths[i];
+        }
+        return cursorY - rowHeight;
+    }
+
+    private String sanitize(String s) {
+        if (s == null) return "";
+        StringBuilder sb = new StringBuilder();
+        for (char c : s.toCharArray()) sb.append(c < 256 ? c : '?');
+        return sb.toString();
     }
 
     public byte[] weeklyCollection(LocalDate date) {

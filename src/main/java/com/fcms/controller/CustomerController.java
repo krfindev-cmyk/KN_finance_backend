@@ -97,4 +97,18 @@ public class CustomerController {
         customerService.delete(id);
         return ResponseEntity.noContent().build();
     }
+
+    /** Marks a fully-collected loan as Closed, removing it from active/Running totals. */
+    @PutMapping("/{id}/close")
+    public Customer close(@PathVariable Long id,
+                           @RequestParam(defaultValue = "system") String editedBy,
+                           @RequestParam(defaultValue = "Account closed after full collection") String reason,
+                           @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        requireAdmin(authHeader);
+        try {
+            return customerService.closeAccount(id, editedBy, reason);
+        } catch (IllegalStateException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
+    }
 }

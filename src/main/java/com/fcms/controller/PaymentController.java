@@ -57,4 +57,14 @@ public class PaymentController {
         requireAdmin(authHeader);
         return paymentService.editPayment(id, req);
     }
+
+    /** Removes a marking entirely — used by the "remove marking" bulk action on the full schedule. */
+    @DeleteMapping("/{id}")
+    public void delete(@PathVariable Long id,
+                        @RequestParam(defaultValue = "system") String deletedBy,
+                        @RequestParam(defaultValue = "") String reason,
+                        @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        requireAdmin(authHeader);
+        paymentService.deletePayment(id, deletedBy, reason);
+    }
 }

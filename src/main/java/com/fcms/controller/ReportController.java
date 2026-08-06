@@ -40,6 +40,12 @@ public class ReportController {
         return reportService.customerReport(id);
     }
 
+    /** Today's (or any given date's) collection summary + per-customer rows, shown live on the Reports page. */
+    @GetMapping("/daily")
+    public com.fcms.dto.DailyReport dailyReport(@RequestParam(required = false) LocalDate date) {
+        return reportService.dailyReport(date);
+    }
+
     // ---------- PDF exports ----------
 
     @GetMapping("/pdf/customer-statement/{customerId}")

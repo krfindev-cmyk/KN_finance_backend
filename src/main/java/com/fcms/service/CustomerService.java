@@ -3,22 +3,28 @@ package com.fcms.service;
 import com.fcms.model.Customer;
 import com.fcms.model.CustomerStatus;
 import com.fcms.model.FinanceType;
+import com.fcms.model.Payment;
 import com.fcms.repository.CustomerRepository;
+import com.fcms.repository.PaymentRepository;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @Service
 public class CustomerService {
 
     private final CustomerRepository customerRepository;
+    private final PaymentRepository paymentRepository;
     private final AuditService auditService;
 
-    public CustomerService(CustomerRepository customerRepository, AuditService auditService) {
+    public CustomerService(CustomerRepository customerRepository, PaymentRepository paymentRepository, AuditService auditService) {
         this.customerRepository = customerRepository;
+        this.paymentRepository = paymentRepository;
         this.auditService = auditService;
     }
 
@@ -101,6 +107,22 @@ public class CustomerService {
         customerRepository.deleteById(id);
     }
 
+    /**
+     * Marks a fully-collected (Completed) loan as Closed. Closed loans are excluded from
+     * "Running" counts/totals everywhere in the app (dashboard, Quick Collection, overdue
+     * lists) — this is the final step once every installment has actually been collected.
+     */
+    public Customer closeAccount(Long id, String editedBy, String reason) {
+        Customer c = customerRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Customer not found: " + id));
+        if (c.getPendingAmount() != null && c.getPendingAmount() > 0) {
+            throw new IllegalStateException("Cannot close this account — it still has a pending balance of " + c.getPendingAmount());
+        }
+        auditService.log("Customer", c.getId(), c.getName(), "status", c.getStatus(), CustomerStatus.Closed, editedBy, reason);
+        c.setStatus(CustomerStatus.Closed);
+        return customerRepository.save(c);
+    }
+
     public void recomputeDerived(Customer c) {
         // Every loan defaults to a 100-installment schedule (e.g. Rs. 1,00,000 => Rs. 1,000/day
         // for 100 days) unless the caller explicitly set a different totalInstallments.
@@ -161,12 +183,20 @@ public class CustomerService {
      * "Today" is always computed in IST so the list refreshes at 12:00 AM India time no
      * matter where the backend server itself is hosted/deployed. Overdue loans (nextDueDate
      * before today) and loans due exactly today are both shown as soon as the day starts.
+     *
+     * Once a loan has ANY payment recorded today — Paid, Partial, NotPaid, or Advance — it
+     * drops off this list immediately, even if (for Partial/NotPaid) nextDueDate didn't
+     * advance. It only reappears after the day rolls over at 12:00 AM IST.
      */
     public List<Customer> getDueToday() {
         LocalDate today = LocalDate.now(IST);
+        Set<Long> alreadyMarkedToday = paymentRepository.findByDate(today).stream()
+                .map(Payment::getCustomerId)
+                .collect(Collectors.toSet());
         return customerRepository.findAll().stream()
                 .filter(c -> c.getStatus() == CustomerStatus.Running)
                 .filter(c -> c.getNextDueDate() != null && !c.getNextDueDate().isAfter(today))
+                .filter(c -> !alreadyMarkedToday.contains(c.getId()))
                 .toList();
     }
 

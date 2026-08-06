@@ -89,18 +89,45 @@ public class PaymentService {
         return entries;
     }
 
+    /**
+     * Records a payment for one day. A loan can only have ONE marking per date: if a payment
+     * already exists for this customer+date (Paid, Partial, NotPaid, or Advance — clicking any
+     * option a second time for the same day, or re-marking after a mistake), that old marking's
+     * effect on the customer's totals is fully reversed and it is deleted before the new one is
+     * applied. This also self-heals any duplicate-day rows left over from before this fix.
+     */
     public Payment recordPayment(Payment payment) {
-        payment.setCreatedAt(LocalDateTime.now());
-        Payment saved = paymentRepository.save(payment);
-
         Customer customer = customerRepository.findById(payment.getCustomerId())
                 .orElseThrow(() -> new IllegalArgumentException("Customer not found"));
 
-        double amt = payment.getAmount() == null ? 0 : payment.getAmount();
+        List<Payment> existingForDate = payment.getDate() == null
+                ? List.of()
+                : paymentRepository.findByCustomerIdAndDate(payment.getCustomerId(), payment.getDate());
+        for (Payment old : existingForDate) {
+            reverseEffect(customer, old);
+        }
+        if (!existingForDate.isEmpty()) {
+            paymentRepository.deleteAll(existingForDate);
+        }
 
-        // Drives the "Payment Status" filter on the Customers list (Paid / Partial / NotPaid / Advance),
-        // independent of whether the payment counts toward totalPaid.
+        payment.setCreatedAt(LocalDateTime.now());
+        applyEffect(customer, payment);
         customer.setLastPaymentType(payment.getType().name());
+
+        customerService.recomputeDerived(customer);
+        customerRepository.save(customer);
+        Payment saved = paymentRepository.save(payment);
+
+        auditService.log("Payment", saved.getId(), customer.getName(), "payment",
+                null, payment.getType() + " - " + payment.getAmount(), payment.getCollectedBy(),
+                existingForDate.isEmpty() ? "New payment recorded" : "Replaced previous marking for this day");
+
+        return saved;
+    }
+
+    /** Applies a payment's forward effect onto the customer's running totals/schedule. */
+    private void applyEffect(Customer customer, Payment payment) {
+        double amt = payment.getAmount() == null ? 0 : payment.getAmount();
 
         if (payment.getType() == PaymentType.Paid || payment.getType() == PaymentType.Partial
                 || payment.getType() == PaymentType.Advance) {
@@ -109,36 +136,45 @@ public class PaymentService {
             customer.setLastPaymentAmount(amt);
 
             if (payment.getType() == PaymentType.Paid) {
-                // Fully covers this installment: advance one period and count it.
                 customer.setPaidInstallments((customer.getPaidInstallments() == null ? 0 : customer.getPaidInstallments()) + 1);
                 customer.setNextDueDate(customerService.computeNextDueDate(payment.getDate(), customer.getFinanceType()));
             } else if (payment.getType() == PaymentType.Partial) {
                 // Doesn't fully cover the installment: due date stays as-is, still counts toward pending.
-                // No change to nextDueDate or paidInstallments.
             } else { // Advance
-                Double installmentAmountObj = customer.getInstallmentAmount();
-                double installmentAmount = installmentAmountObj == null ? 0 : installmentAmountObj;
+                double installmentAmount = customer.getInstallmentAmount() == null ? 0 : customer.getInstallmentAmount();
                 if (installmentAmount <= 0) {
-                    // Fallback: no installment amount known, just advance by one period.
                     customer.setNextDueDate(customerService.computeNextDueDate(payment.getDate(), customer.getFinanceType()));
                 } else {
-                    int periodsCovered = (int) Math.floor(amt / installmentAmount);
-                    if (periodsCovered < 1) periodsCovered = 1;
+                    int periodsCovered = Math.max(1, (int) Math.floor(amt / installmentAmount));
                     customer.setNextDueDate(customerService.computeNextDueDate(payment.getDate(), customer.getFinanceType(), periodsCovered));
                     customer.setPaidInstallments((customer.getPaidInstallments() == null ? 0 : customer.getPaidInstallments()) + periodsCovered);
-                    // Any remainder beyond whole installments covered is left as extra credit in totalPaid.
                 }
             }
         }
-        // NotPaid: add 0 to totalPaid, leave nextDueDate unchanged (still due).
+        // NotPaid: adds 0 to totalPaid; nextDueDate is left as whatever it already is (still due).
+    }
 
-        customerService.recomputeDerived(customer);
-        customerRepository.save(customer);
-
-        auditService.log("Payment", saved.getId(), customer.getName(), "payment",
-                null, payment.getType() + " - " + payment.getAmount(), payment.getCollectedBy(), "New payment recorded");
-
-        return saved;
+    /** Undoes a previously-applied payment's effect — the inverse of applyEffect — before a same-day replacement is applied. */
+    private void reverseEffect(Customer customer, Payment payment) {
+        double amt = payment.getAmount() == null ? 0 : payment.getAmount();
+        boolean counted = payment.getType() == PaymentType.Paid || payment.getType() == PaymentType.Partial
+                || payment.getType() == PaymentType.Advance;
+        if (counted) {
+            double totalPaid = customer.getTotalPaid() == null ? 0 : customer.getTotalPaid();
+            customer.setTotalPaid(Math.max(0, totalPaid - amt));
+        }
+        if (payment.getType() == PaymentType.Paid) {
+            customer.setPaidInstallments(Math.max(0, (customer.getPaidInstallments() == null ? 0 : customer.getPaidInstallments()) - 1));
+        } else if (payment.getType() == PaymentType.Advance) {
+            double installmentAmount = customer.getInstallmentAmount() == null ? 0 : customer.getInstallmentAmount();
+            int periods = installmentAmount > 0 ? Math.max(1, (int) Math.floor(amt / installmentAmount)) : 1;
+            customer.setPaidInstallments(Math.max(0, (customer.getPaidInstallments() == null ? 0 : customer.getPaidInstallments()) - periods));
+        }
+        // Reset nextDueDate back to this payment's own date — whatever the replacement payment
+        // does next (applyEffect, or nothing for NotPaid) starts from the correct "still due" baseline.
+        if (payment.getDate() != null) {
+            customer.setNextDueDate(payment.getDate());
+        }
     }
 
     public Payment editPayment(Long paymentId, PaymentEditRequest req) {
@@ -206,5 +242,33 @@ public class PaymentService {
         customerRepository.save(customer);
 
         return paymentRepository.save(payment);
+    }
+
+    /**
+     * Removes a marking entirely (used by the "remove marking" bulk action on the full
+     * schedule) — reverses whatever this payment contributed to totalPaid, then deletes it,
+     * putting that day's slot back to its natural Missed/Due/Pending state on the timeline.
+     * Like editPayment, this intentionally leaves paidInstallments/nextDueDate untouched.
+     */
+    public void deletePayment(Long paymentId, String deletedBy, String reason) {
+        Payment payment = paymentRepository.findById(paymentId)
+                .orElseThrow(() -> new IllegalArgumentException("Payment not found"));
+
+        Customer customer = customerRepository.findById(payment.getCustomerId())
+                .orElseThrow(() -> new IllegalArgumentException("Customer not found"));
+
+        boolean counted = payment.getType() == PaymentType.Paid || payment.getType() == PaymentType.Partial
+                || payment.getType() == PaymentType.Advance;
+        if (counted && payment.getAmount() != null) {
+            double totalPaid = customer.getTotalPaid() == null ? 0 : customer.getTotalPaid();
+            customer.setTotalPaid(Math.max(0, totalPaid - payment.getAmount()));
+        }
+
+        auditService.log("Payment", payment.getId(), customer.getName(), "removed",
+                payment.getType() + " - " + payment.getAmount(), null, deletedBy, reason);
+
+        customerService.recomputeDerived(customer);
+        customerRepository.save(customer);
+        paymentRepository.delete(payment);
     }
 }
