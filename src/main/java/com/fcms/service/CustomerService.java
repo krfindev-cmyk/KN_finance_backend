@@ -73,6 +73,12 @@ public class CustomerService {
         auditField(existing, updated, "name", existing.getName(), updated.getName(), editedBy, reason);
         auditField(existing, updated, "mobile", existing.getMobile(), updated.getMobile(), editedBy, reason);
         auditField(existing, updated, "financeAmount", existing.getFinanceAmount(), updated.getFinanceAmount(), editedBy, reason);
+        auditField(existing, updated, "interest", existing.getInterest(), updated.getInterest(), editedBy, reason);
+        auditField(existing, updated, "installmentAmount", existing.getInstallmentAmount(), updated.getInstallmentAmount(), editedBy, reason);
+        auditField(existing, updated, "totalInstallments", existing.getTotalInstallments(), updated.getTotalInstallments(), editedBy, reason);
+        auditField(existing, updated, "totalPaid", existing.getTotalPaid(), updated.getTotalPaid(), editedBy, reason);
+        auditField(existing, updated, "paidInstallments", existing.getPaidInstallments(), updated.getPaidInstallments(), editedBy, reason);
+        auditField(existing, updated, "startDate", existing.getStartDate(), updated.getStartDate(), editedBy, reason);
         auditField(existing, updated, "status", existing.getStatus(), updated.getStatus(), editedBy, reason);
 
         existing.setName(updated.getName());
@@ -91,6 +97,12 @@ public class CustomerService {
         existing.setCollectionDay(updated.getCollectionDay());
         existing.setInstallmentAmount(updated.getInstallmentAmount());
         existing.setTotalInstallments(updated.getTotalInstallments());
+        // Total Paid / Installments Paid are normally only ever changed by recording payments,
+        // but an admin can correct them directly here too (e.g. fixing a data-entry mistake) —
+        // only applied when the caller actually sent a value, so a payload that omits them
+        // (or an older client) never silently zeroes out real collection history.
+        if (updated.getTotalPaid() != null) existing.setTotalPaid(updated.getTotalPaid());
+        if (updated.getPaidInstallments() != null) existing.setPaidInstallments(updated.getPaidInstallments());
         if (updated.getStatus() != null) existing.setStatus(updated.getStatus());
 
         recomputeDerived(existing);

@@ -1,0 +1,101 @@
+package com.fcms.service;
+
+import com.fcms.dto.CashLedgerSummary;
+import com.fcms.model.CashExpense;
+import com.fcms.model.Payment;
+import com.fcms.model.PaymentType;
+import com.fcms.repository.CashExpenseRepository;
+import com.fcms.repository.PaymentRepository;
+import org.springframework.stereotype.Service;
+
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.List;
+
+/**
+ * Daily cash-in-hand ledger: how much was collected that day, what the admin spent/sent out of
+ * it (petrol/food allowance, salary, money sent to someone on the owner's instruction), and the
+ * balance left over. Whatever isn't spent on a given day automatically carries forward as the
+ * next day's opening balance — nothing needs to be manually rolled over.
+ */
+@Service
+public class CashLedgerService {
+
+    private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
+
+    private final CashExpenseRepository cashExpenseRepository;
+    private final PaymentRepository paymentRepository;
+
+    public CashLedgerService(CashExpenseRepository cashExpenseRepository, PaymentRepository paymentRepository) {
+        this.cashExpenseRepository = cashExpenseRepository;
+        this.paymentRepository = paymentRepository;
+    }
+
+    /** Total cash actually collected on a given date (NotPaid entries contribute nothing). */
+    private double collectedOn(LocalDate date) {
+        return paymentRepository.findByDate(date).stream()
+                .filter(p -> p.getType() != PaymentType.NotPaid)
+                .mapToDouble(p -> p.getAmount() == null ? 0 : p.getAmount())
+                .sum();
+    }
+
+    private double collectedBefore(LocalDate date) {
+        return paymentRepository.findAll().stream()
+                .filter(p -> p.getDate() != null && p.getDate().isBefore(date))
+                .filter(p -> p.getType() != PaymentType.NotPaid)
+                .mapToDouble(p -> p.getAmount() == null ? 0 : p.getAmount())
+                .sum();
+    }
+
+    private double expensesOn(LocalDate date) {
+        return cashExpenseRepository.findByDateOrderByCreatedAtDesc(date).stream()
+                .mapToDouble(e -> e.getAmount() == null ? 0 : e.getAmount())
+                .sum();
+    }
+
+    private double expensesBefore(LocalDate date) {
+        return cashExpenseRepository.findByDateBefore(date).stream()
+                .mapToDouble(e -> e.getAmount() == null ? 0 : e.getAmount())
+                .sum();
+    }
+
+    /**
+     * The cash-in-hand summary for one day: opening balance (everything collected minus
+     * everything spent before this date), today's collection, today's expenses, and the
+     * resulting closing balance — which becomes tomorrow's opening balance automatically.
+     */
+    public CashLedgerSummary summary(LocalDate date) {
+        LocalDate d = date != null ? date : LocalDate.now(IST);
+
+        double openingBalance = round2(collectedBefore(d) - expensesBefore(d));
+        double collectedToday = round2(collectedOn(d));
+        List<CashExpense> expenses = cashExpenseRepository.findByDateOrderByCreatedAtDesc(d);
+        double expensesToday = round2(expenses.stream().mapToDouble(e -> e.getAmount() == null ? 0 : e.getAmount()).sum());
+        double closingBalance = round2(openingBalance + collectedToday - expensesToday);
+
+        CashLedgerSummary summary = new CashLedgerSummary();
+        summary.setDate(d);
+        summary.setOpeningBalance(openingBalance);
+        summary.setCollectedToday(collectedToday);
+        summary.setExpensesToday(expensesToday);
+        summary.setClosingBalance(closingBalance);
+        summary.setExpenses(expenses);
+        return summary;
+    }
+
+    public CashExpense addExpense(CashExpense expense, String createdBy) {
+        if (expense.getDate() == null) expense.setDate(LocalDate.now(IST));
+        expense.setCreatedBy(createdBy);
+        expense.setCreatedAt(LocalDateTime.now());
+        return cashExpenseRepository.save(expense);
+    }
+
+    public void deleteExpense(Long id) {
+        cashExpenseRepository.deleteById(id);
+    }
+
+    private double round2(double v) {
+        return Math.round(v * 100.0) / 100.0;
+    }
+}
