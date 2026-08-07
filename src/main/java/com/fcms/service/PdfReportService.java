@@ -74,12 +74,14 @@ public class PdfReportService {
                     + " | Finance: " + fmt(c.getFinanceAmount()) + " | Next Due: " + str(c.getNextDueDate());
 
             PdfTableWriter writer = new PdfTableWriter(document, title,
-                    new String[]{"Date", "Type", "Amount", "Collected By", "Notes"},
-                    new int[]{15, 15, 15, 20, 35});
+                    new String[]{"S.No", "Date", "Type", "Amount", "Collected By", "Notes"},
+                    new int[]{6, 14, 14, 14, 18, 34},
+                    new boolean[]{true, false, false, true, false, false});
 
             double total = 0;
+            int sno = 1;
             for (Payment p : payments) {
-                writer.addRow(new String[]{str(p.getDate()), str(p.getType()), fmt(p.getAmount()), safe(p.getCollectedBy()), safe(p.getNotes())},
+                writer.addRow(new String[]{String.valueOf(sno++), str(p.getDate()), str(p.getType()), fmt(p.getAmount()), safe(p.getCollectedBy()), safe(p.getNotes())},
                         colorFor(p.getType()), textColorFor(p.getType()));
                 if (p.getType() != PaymentType.NotPaid) total += p.getAmount() == null ? 0 : p.getAmount();
             }
@@ -136,8 +138,11 @@ public class PdfReportService {
         float rowHeight = 18f;
         float pageWidth = PDRectangle.A4.getWidth();
         float pageHeight = PDRectangle.A4.getHeight();
-        int[] colUnits = {22, 14, 10, 14, 14, 14, 12};
-        String[] headers = {"Name", "Daily Amt", "Days Paid", "Loan Amt", "Total Paid", "Balance", "Today"};
+        int[] colUnits = {6, 20, 14, 10, 14, 14, 14, 12};
+        String[] headers = {"S.No", "Name", "Daily Amt", "Days Paid", "Loan Amt", "Total Paid", "Balance", "Today"};
+        // Header cells right-align in the same columns as their data below, so the column
+        // heading sits flush above the numbers instead of drifting to the left of them.
+        boolean[] rightAlign = {true, false, true, false, true, true, true, false};
         int totalUnits = 0;
         for (int u : colUnits) totalUnits += u;
         float usableWidth = pageWidth - 2 * margin;
@@ -178,7 +183,7 @@ public class PdfReportService {
             cursorY -= 12;
 
             // ---- Table header ----
-            cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0);
+            cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, rightAlign);
 
             int rowIdx = 0;
             double sumDaily = 0, sumLoan = 0, sumPaid = 0, sumBalance = 0;
@@ -189,12 +194,13 @@ public class PdfReportService {
                     document.addPage(page);
                     stream = new PDPageContentStream(document, page);
                     cursorY = pageHeight - margin;
-                    cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0);
+                    cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, rightAlign);
                     rowIdx = 0;
                 }
                 Color statusColor = statusColor(row.getTodayStatus());
                 boolean isStatus = statusColor != PdfTableWriter.WHITE;
                 String[] values = {
+                        String.valueOf(rowIdx + 1),
                         safe(row.getName()),
                         fmt(row.getDailyCollection()),
                         (row.getDaysPaid() == null ? "0" : row.getDaysPaid()) + "/" + (row.getTotalInstallments() == null ? "-" : row.getTotalInstallments()),
@@ -203,7 +209,7 @@ public class PdfReportService {
                         fmt(row.getBalanceAmount()),
                         safe(row.getTodayStatus())
                 };
-                cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, values, PDType1Font.HELVETICA, statusColor, isStatus ? statusColor : Color.BLACK, isStatus, rowIdx);
+                cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, values, PDType1Font.HELVETICA, statusColor, isStatus ? statusColor : Color.BLACK, isStatus, rowIdx, rightAlign);
                 rowIdx++;
 
                 sumDaily += row.getDailyCollection() == null ? 0 : row.getDailyCollection();
@@ -221,9 +227,10 @@ public class PdfReportService {
                 document.addPage(page);
                 stream = new PDPageContentStream(document, page);
                 cursorY = pageHeight - margin;
-                cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0);
+                cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, rightAlign);
             }
             String[] totalsValues = {
+                    "",
                     "TOTAL",
                     fmt(sumDaily),
                     "-",
@@ -232,7 +239,7 @@ public class PdfReportService {
                     fmt(sumBalance),
                     "P:" + report.getPaidCount() + " N:" + report.getNotPaidCount()
             };
-            cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, totalsValues, PDType1Font.HELVETICA_BOLD, TOTALS_ROW_COLOR, Color.BLACK, false, 0);
+            cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, totalsValues, PDType1Font.HELVETICA_BOLD, TOTALS_ROW_COLOR, Color.BLACK, false, 0, rightAlign);
 
             cursorY -= 8;
             if (cursorY - 16 < margin) {
@@ -265,8 +272,9 @@ public class PdfReportService {
         float pageWidth = PDRectangle.A4.getWidth();
         float pageHeight = PDRectangle.A4.getHeight();
         float usableWidth = pageWidth - 2 * margin;
-        int[] colUnits = {16, 14, 20, 16, 22, 12};
-        String[] headers = {"Category", "Amount", "Recipient", "Via", "Notes", "By"};
+        int[] colUnits = {6, 16, 14, 18, 14, 20, 12};
+        String[] headers = {"S.No", "Category", "Amount", "Recipient", "Via", "Notes", "By"};
+        boolean[] rightAlign = {true, false, true, false, false, false, false};
         int totalUnits = 0;
         for (int u : colUnits) totalUnits += u;
         float[] colWidths = new float[colUnits.length];
@@ -305,7 +313,7 @@ public class PdfReportService {
             cursorY -= 6;
 
             // ---- Table header ----
-            cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0);
+            cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, rightAlign);
 
             int rowIdx = 0;
             for (CashExpense e : summary.getExpenses()) {
@@ -315,10 +323,11 @@ public class PdfReportService {
                     document.addPage(page);
                     stream = new PDPageContentStream(document, page);
                     cursorY = pageHeight - margin;
-                    cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0);
+                    cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, rightAlign);
                     rowIdx = 0;
                 }
                 String[] values = {
+                        String.valueOf(rowIdx + 1),
                         e.getCategory() == null ? "-" : e.getCategory().name(),
                         fmt(e.getAmount()),
                         safe(e.getRecipientName()),
@@ -326,7 +335,7 @@ public class PdfReportService {
                         safe(e.getNotes()),
                         safe(e.getCreatedBy())
                 };
-                cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, values, PDType1Font.HELVETICA, Color.WHITE, Color.BLACK, false, rowIdx);
+                cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, values, PDType1Font.HELVETICA, Color.WHITE, Color.BLACK, false, rowIdx, rightAlign);
                 rowIdx++;
             }
             if (summary.getExpenses().isEmpty()) {
@@ -417,20 +426,19 @@ public class PdfReportService {
         return y - advance;
     }
 
-    /** True for values that are basically a formatted number (amounts, percentages) — right-aligned so digits line up by place value column to column, instead of every value starting flush left. */
-    private boolean looksNumeric(String v) {
-        if (v == null || v.isBlank()) return false;
-        return v.matches("-?[0-9,]+(\\.[0-9]+)?%?");
-    }
-
     /**
      * isStatus rows (Paid/NotPaid/Partial/Advance) get a soft tinted background + colored left
      * accent bar + colored text, like a dashboard status badge. Non-status rows get plain
      * white/zebra-striped backgrounds so the long customer list stays easy to scan.
+     *
+     * rightAlignCols marks which columns hold numbers (by column index, not by sniffing each
+     * cell's content) so the header label sits right-aligned in exactly the same spot as the
+     * data below it — a numeric column's heading and its values line up instead of the heading
+     * drifting to the left of right-aligned numbers.
      */
     private float drawTableRow(PDPageContentStream stream, float margin, float cursorY, float rowHeight, float[] colWidths,
                                 String[] values, org.apache.pdfbox.pdmodel.font.PDFont font, Color bg, Color textColor,
-                                boolean isStatus, int rowIndex) throws IOException {
+                                boolean isStatus, int rowIndex, boolean[] rightAlignCols) throws IOException {
         float x = margin;
         float totalWidth = 0;
         for (float w : colWidths) totalWidth += w;
@@ -462,7 +470,7 @@ public class PdfReportService {
             if (v.length() > maxChars) v = v.substring(0, maxChars - 1) + "...";
             String sanitized = sanitize(v);
 
-            boolean rightAlign = !isHeader && looksNumeric(sanitized);
+            boolean rightAlign = rightAlignCols != null && i < rightAlignCols.length && rightAlignCols[i];
             float textX;
             if (rightAlign) {
                 float textWidth = font.getStringWidth(sanitized) / 1000f * fontSize;
@@ -511,14 +519,16 @@ public class PdfReportService {
              PDDocument document = new PDDocument()) {
 
             PdfTableWriter writer = new PdfTableWriter(document, title,
-                    new String[]{"Date", "Customer", "Type", "Amount", "Collected By"},
-                    new int[]{15, 30, 15, 15, 25});
+                    new String[]{"S.No", "Date", "Customer", "Type", "Amount", "Collected By"},
+                    new int[]{6, 14, 28, 14, 14, 24},
+                    new boolean[]{true, false, false, false, true, false});
 
             double total = 0;
+            int sno = 1;
             for (Payment p : payments) {
                 String customerName = customerRepository.findById(p.getCustomerId())
                         .map(Customer::getName).orElse("#" + p.getCustomerId());
-                writer.addRow(new String[]{str(p.getDate()), safe(customerName), str(p.getType()), fmt(p.getAmount()), safe(p.getCollectedBy())},
+                writer.addRow(new String[]{String.valueOf(sno++), str(p.getDate()), safe(customerName), str(p.getType()), fmt(p.getAmount()), safe(p.getCollectedBy())},
                         colorFor(p.getType()), textColorFor(p.getType()));
                 if (p.getType() != PaymentType.NotPaid) total += p.getAmount() == null ? 0 : p.getAmount();
             }
@@ -542,16 +552,18 @@ public class PdfReportService {
              PDDocument document = new PDDocument()) {
 
             PdfTableWriter writer = new PdfTableWriter(document, "Pending Customers Report",
-                    new String[]{"Name", "Mobile", "Status", "Next Due", "Pending Amount"},
-                    new int[]{25, 20, 15, 15, 25});
+                    new String[]{"S.No", "Name", "Mobile", "Status", "Next Due", "Pending Amount"},
+                    new int[]{6, 22, 18, 14, 14, 26},
+                    new boolean[]{true, false, false, false, false, true});
 
             double total = 0;
+            int sno = 1;
             for (Customer c : customers) {
                 boolean overdue = c.getStatus() == CustomerStatus.Running && c.getNextDueDate() != null
                         && c.getNextDueDate().isBefore(LocalDate.now());
                 Color bg = overdue ? PdfTableWriter.PENDING_COLOR : PdfTableWriter.WHITE;
                 Color text = overdue ? Color.WHITE : Color.BLACK;
-                writer.addRow(new String[]{safe(c.getName()), safe(c.getMobile()), str(c.getStatus()), str(c.getNextDueDate()), fmt(c.getPendingAmount())},
+                writer.addRow(new String[]{String.valueOf(sno++), safe(c.getName()), safe(c.getMobile()), str(c.getStatus()), str(c.getNextDueDate()), fmt(c.getPendingAmount())},
                         bg, text);
                 total += c.getPendingAmount() == null ? 0 : c.getPendingAmount();
             }
@@ -574,16 +586,18 @@ public class PdfReportService {
              PDDocument document = new PDDocument()) {
 
             PdfTableWriter writer = new PdfTableWriter(document, "Recovery Status Report",
-                    new String[]{"Name", "Finance Amt", "Total Amt", "Total Paid", "Recovery %"},
-                    new int[]{25, 18, 18, 18, 21});
+                    new String[]{"S.No", "Name", "Finance Amt", "Total Amt", "Total Paid", "Recovery %"},
+                    new int[]{6, 22, 17, 17, 17, 21},
+                    new boolean[]{true, false, true, true, true, true});
 
+            int sno = 1;
             for (Customer c : customers) {
                 double totalAmount = c.getTotalAmount() == null ? 0 : c.getTotalAmount();
                 double totalPaid = c.getTotalPaid() == null ? 0 : c.getTotalPaid();
                 double recoveryPct = totalAmount > 0 ? (totalPaid / totalAmount) * 100.0 : 0.0;
                 Color bg = recoveryPct >= 100 ? PdfTableWriter.PAID_COLOR
                         : recoveryPct > 0 ? PdfTableWriter.PARTIAL_COLOR : PdfTableWriter.PENDING_COLOR;
-                writer.addRow(new String[]{safe(c.getName()), fmt(c.getFinanceAmount()), fmt(totalAmount), fmt(totalPaid), String.format("%.1f%%", recoveryPct)},
+                writer.addRow(new String[]{String.valueOf(sno++), safe(c.getName()), fmt(c.getFinanceAmount()), fmt(totalAmount), fmt(totalPaid), String.format("%.1f%%", recoveryPct)},
                         bg, Color.WHITE);
             }
             writer.close();
@@ -604,14 +618,16 @@ public class PdfReportService {
              PDDocument document = new PDDocument()) {
 
             PdfTableWriter writer = new PdfTableWriter(document, "Full Payment Ledger",
-                    new String[]{"Date", "Customer", "Type", "Amount", "Collected By"},
-                    new int[]{15, 30, 15, 15, 25});
+                    new String[]{"S.No", "Date", "Customer", "Type", "Amount", "Collected By"},
+                    new int[]{6, 14, 28, 14, 14, 24},
+                    new boolean[]{true, false, false, false, true, false});
 
             double total = 0;
+            int sno = 1;
             for (Payment p : payments) {
                 String customerName = customerRepository.findById(p.getCustomerId())
                         .map(Customer::getName).orElse("#" + p.getCustomerId());
-                writer.addRow(new String[]{str(p.getDate()), safe(customerName), str(p.getType()), fmt(p.getAmount()), safe(p.getCollectedBy())},
+                writer.addRow(new String[]{String.valueOf(sno++), str(p.getDate()), safe(customerName), str(p.getType()), fmt(p.getAmount()), safe(p.getCollectedBy())},
                         colorFor(p.getType()), textColorFor(p.getType()));
                 if (p.getType() != PaymentType.NotPaid) total += p.getAmount() == null ? 0 : p.getAmount();
             }

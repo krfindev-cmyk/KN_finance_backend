@@ -43,12 +43,19 @@ public class PdfTableWriter {
     private float cursorY;
     private String title;
     private int rowIndex = 0;
+    /** Which columns hold amounts/percentages (by index) — right-aligns both the header label and every data cell in that column so they line up. Null falls back to per-cell auto-detection for data rows only. */
+    private final boolean[] rightAlignCols;
 
     public PdfTableWriter(PDDocument document, String title, String[] headers, int[] colWidths) throws IOException {
+        this(document, title, headers, colWidths, null);
+    }
+
+    public PdfTableWriter(PDDocument document, String title, String[] headers, int[] colWidths, boolean[] rightAlignCols) throws IOException {
         this.document = document;
         this.title = title;
         this.headers = headers;
         this.colWidths = colWidths;
+        this.rightAlignCols = rightAlignCols;
         int totalUnits = 0;
         for (int w : colWidths) totalUnits += w;
         float usableWidth = PAGE_WIDTH - 2 * MARGIN;
@@ -120,9 +127,12 @@ public class PdfTableWriter {
         for (int i = 0; i < values.length && i < absColWidths.length; i++) {
             String v = truncate(values[i], absColWidths[i], font);
             float textX = x + 4;
-            // Numeric-looking cells (amounts, percentages) are right-aligned so the digits line
-            // up by place value column to column, instead of every value starting flush left.
-            if (!isHeaderRow && looksNumeric(v)) {
+            // Numeric columns are right-aligned so the digits line up by place value column to
+            // column, and the header label sits flush above them instead of drifting left.
+            boolean rightAlign = rightAlignCols != null
+                    ? (i < rightAlignCols.length && rightAlignCols[i])
+                    : (!isHeaderRow && looksNumeric(v));
+            if (rightAlign) {
                 float textWidth = font.getStringWidth(v) / 1000f * fontSize;
                 textX = x + absColWidths[i] - textWidth - 6;
                 if (textX < x + 2) textX = x + 2;
