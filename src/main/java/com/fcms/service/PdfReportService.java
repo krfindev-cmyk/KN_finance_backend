@@ -313,6 +313,14 @@ public class PdfReportService {
     }
 
     /**
+     * Which columns hold numeric amounts in the daily-collection table (Name, Daily Amt, Days
+     * Paid, Loan Amt, Total Paid, Balance, Today) — those get right-aligned so the digits line
+     * up by place value (e.g. 4,00,000 sits flush right against 30,000) instead of both starting
+     * flush left, which made it hard to compare amounts at a glance.
+     */
+    private static final boolean[] RIGHT_ALIGN_COLS = {false, true, false, true, true, true, false};
+
+    /**
      * isStatus rows (Paid/NotPaid/Partial/Advance) get a soft tinted background + colored left
      * accent bar + colored text, like a dashboard status badge. Non-status rows get plain
      * white/zebra-striped backgrounds so the long customer list stays easy to scan.
@@ -344,15 +352,28 @@ public class PdfReportService {
             stream.fill();
         }
 
+        float fontSize = 9f;
         for (int i = 0; i < values.length && i < colWidths.length; i++) {
             String v = values[i] == null ? "" : values[i];
             int maxChars = Math.max(3, (int) (colWidths[i] / 5.0));
             if (v.length() > maxChars) v = v.substring(0, maxChars - 1) + "...";
+            String sanitized = sanitize(v);
+
+            boolean rightAlign = i < RIGHT_ALIGN_COLS.length && RIGHT_ALIGN_COLS[i];
+            float textX;
+            if (rightAlign) {
+                float textWidth = font.getStringWidth(sanitized) / 1000f * fontSize;
+                textX = x + colWidths[i] - textWidth - 6;
+                if (textX < x + 2) textX = x + 2; // never let a too-wide value spill into the previous column
+            } else {
+                textX = x + 4;
+            }
+
             stream.beginText();
-            stream.setFont(font, 9);
+            stream.setFont(font, fontSize);
             stream.setNonStrokingColor(textColor);
-            stream.newLineAtOffset(x + 4, cursorY - rowHeight + 8);
-            stream.showText(sanitize(v));
+            stream.newLineAtOffset(textX, cursorY - rowHeight + 8);
+            stream.showText(sanitized);
             stream.endText();
             x += colWidths[i];
         }

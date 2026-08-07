@@ -116,12 +116,28 @@ public class PdfTableWriter {
             stream.addRect(MARGIN, rowTop - ROW_HEIGHT + 4, 3, ROW_HEIGHT - 2);
             stream.fill();
         }
+        float fontSize = 9f;
         for (int i = 0; i < values.length && i < absColWidths.length; i++) {
-            drawText(stream, x + 4, rowTop - ROW_HEIGHT + 8, truncate(values[i], absColWidths[i], font), font, 9, rowText);
+            String v = truncate(values[i], absColWidths[i], font);
+            float textX = x + 4;
+            // Numeric-looking cells (amounts, percentages) are right-aligned so the digits line
+            // up by place value column to column, instead of every value starting flush left.
+            if (!isHeaderRow && looksNumeric(v)) {
+                float textWidth = font.getStringWidth(v) / 1000f * fontSize;
+                textX = x + absColWidths[i] - textWidth - 6;
+                if (textX < x + 2) textX = x + 2;
+            }
+            drawText(stream, textX, rowTop - ROW_HEIGHT + 8, v, font, fontSize, rowText);
             x += absColWidths[i];
         }
         cursorY -= ROW_HEIGHT;
         if (!isHeaderRow) rowIndex++;
+    }
+
+    /** True for values that are basically a formatted number (amounts, percentages) — e.g. "4,00,000.00", "-1,200", "45.5%". */
+    private boolean looksNumeric(String v) {
+        if (v == null || v.isBlank()) return false;
+        return v.matches("-?[0-9,]+(\\.[0-9]+)?%?");
     }
 
     private Color tint(Color c, float towardsWhite) {
