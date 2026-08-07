@@ -29,6 +29,8 @@ import java.util.Locale;
 @Service
 public class PdfReportService {
 
+    private static final Color TOTALS_ROW_COLOR = new Color(226, 232, 240);
+
     private final CustomerRepository customerRepository;
     private final PaymentRepository paymentRepository;
     private final ReportService reportService;
@@ -129,8 +131,8 @@ public class PdfReportService {
         float rowHeight = 18f;
         float pageWidth = PDRectangle.A4.getWidth();
         float pageHeight = PDRectangle.A4.getHeight();
-        int[] colUnits = {22, 14, 14, 14, 14, 10, 12};
-        String[] headers = {"Name", "Loan Amt", "Total Paid", "Balance", "Daily Amt", "Days Paid", "Today"};
+        int[] colUnits = {22, 14, 10, 14, 14, 14, 12};
+        String[] headers = {"Name", "Daily Amt", "Days Paid", "Loan Amt", "Total Paid", "Balance", "Today"};
         int totalUnits = 0;
         for (int u : colUnits) totalUnits += u;
         float usableWidth = pageWidth - 2 * margin;
@@ -174,6 +176,7 @@ public class PdfReportService {
             cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0);
 
             int rowIdx = 0;
+            double sumDaily = 0, sumLoan = 0, sumPaid = 0, sumBalance = 0;
             for (DailyReportRow row : report.getRows()) {
                 if (cursorY - rowHeight < margin) {
                     stream.close();
@@ -188,16 +191,43 @@ public class PdfReportService {
                 boolean isStatus = statusColor != PdfTableWriter.WHITE;
                 String[] values = {
                         safe(row.getName()),
+                        fmt(row.getDailyCollection()),
+                        (row.getDaysPaid() == null ? "0" : row.getDaysPaid()) + "/" + (row.getTotalInstallments() == null ? "-" : row.getTotalInstallments()),
                         fmt(row.getTotalLoanAmount()),
                         fmt(row.getTotalPaid()),
                         fmt(row.getBalanceAmount()),
-                        fmt(row.getDailyCollection()),
-                        (row.getDaysPaid() == null ? "0" : row.getDaysPaid()) + "/" + (row.getTotalInstallments() == null ? "-" : row.getTotalInstallments()),
                         safe(row.getTodayStatus())
                 };
                 cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, values, PDType1Font.HELVETICA, statusColor, isStatus ? statusColor : Color.BLACK, isStatus, rowIdx);
                 rowIdx++;
+
+                sumDaily += row.getDailyCollection() == null ? 0 : row.getDailyCollection();
+                sumLoan += row.getTotalLoanAmount() == null ? 0 : row.getTotalLoanAmount();
+                sumPaid += row.getTotalPaid() == null ? 0 : row.getTotalPaid();
+                sumBalance += row.getBalanceAmount() == null ? 0 : row.getBalanceAmount();
             }
+
+            // ---- Totals row — sums every numeric column except Days Paid, plus today's
+            // Paid/Not Paid counts in the last column, so the collector sees a grand total
+            // without adding anything up by hand. ----
+            if (cursorY - rowHeight < margin) {
+                stream.close();
+                page = new PDPage(PDRectangle.A4);
+                document.addPage(page);
+                stream = new PDPageContentStream(document, page);
+                cursorY = pageHeight - margin;
+                cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0);
+            }
+            String[] totalsValues = {
+                    "TOTAL",
+                    fmt(sumDaily),
+                    "-",
+                    fmt(sumLoan),
+                    fmt(sumPaid),
+                    fmt(sumBalance),
+                    "P:" + report.getPaidCount() + " N:" + report.getNotPaidCount()
+            };
+            cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, totalsValues, PDType1Font.HELVETICA_BOLD, TOTALS_ROW_COLOR, Color.BLACK, false, 0);
 
             cursorY -= 8;
             if (cursorY - 16 < margin) {
@@ -295,8 +325,9 @@ public class PdfReportService {
         for (float w : colWidths) totalWidth += w;
 
         boolean isHeader = bg != null && bg.equals(PdfTableWriter.HEADER_COLOR);
+        boolean isTotalsRow = bg != null && bg.equals(TOTALS_ROW_COLOR);
         Color rowBg;
-        if (isHeader) {
+        if (isHeader || isTotalsRow) {
             rowBg = bg;
         } else if (isStatus) {
             rowBg = tint(bg, 0.88f);

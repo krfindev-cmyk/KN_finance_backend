@@ -119,9 +119,13 @@ public class ReportService {
 
     public Map<String, Object> orgSummary() {
         List<Customer> all = customerRepository.findAll();
-        double totalFinanced = all.stream().mapToDouble(c -> c.getFinanceAmount() == null ? 0 : c.getFinanceAmount()).sum();
-        double totalCollected = all.stream().mapToDouble(c -> c.getTotalPaid() == null ? 0 : c.getTotalPaid()).sum();
-        double totalPending = all.stream().mapToDouble(c -> c.getPendingAmount() == null ? 0 : c.getPendingAmount()).sum();
+        // "Current" totals deliberately exclude Closed accounts — once a loan is closed it's
+        // fully settled and out of the picture, so it shouldn't keep inflating the org-wide
+        // Total Financed / Total Collected / Total Pending figures.
+        List<Customer> current = all.stream().filter(c -> c.getStatus() != CustomerStatus.Closed).toList();
+        double totalFinanced = current.stream().mapToDouble(c -> c.getFinanceAmount() == null ? 0 : c.getFinanceAmount()).sum();
+        double totalCollected = current.stream().mapToDouble(c -> c.getTotalPaid() == null ? 0 : c.getTotalPaid()).sum();
+        double totalPending = current.stream().mapToDouble(c -> c.getPendingAmount() == null ? 0 : c.getPendingAmount()).sum();
         long running = all.stream().filter(c -> c.getStatus() == CustomerStatus.Running).count();
         long completed = all.stream().filter(c -> c.getStatus() == CustomerStatus.Completed).count();
         long closed = all.stream().filter(c -> c.getStatus() == CustomerStatus.Closed).count();
