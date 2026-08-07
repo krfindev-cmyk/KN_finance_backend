@@ -4,8 +4,13 @@ import com.fcms.dto.CashLedgerSummary;
 import com.fcms.model.CashExpense;
 import com.fcms.service.AuthService;
 import com.fcms.service.CashLedgerService;
+import com.fcms.service.PdfReportService;
 import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -17,10 +22,12 @@ public class CashLedgerController {
 
     private final CashLedgerService cashLedgerService;
     private final AuthService authService;
+    private final PdfReportService pdfReportService;
 
-    public CashLedgerController(CashLedgerService cashLedgerService, AuthService authService) {
+    public CashLedgerController(CashLedgerService cashLedgerService, AuthService authService, PdfReportService pdfReportService) {
         this.cashLedgerService = cashLedgerService;
         this.authService = authService;
+        this.pdfReportService = pdfReportService;
     }
 
     private void requireAdmin(String authHeader) {
@@ -50,5 +57,17 @@ public class CashLedgerController {
                                @RequestHeader(value = "Authorization", required = false) String authHeader) {
         requireAdmin(authHeader);
         cashLedgerService.deleteExpense(id);
+    }
+
+    @GetMapping("/pdf")
+    public ResponseEntity<byte[]> pdf(@RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+                                       @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        requireAdmin(authHeader);
+        LocalDate d = date == null ? LocalDate.now() : date;
+        byte[] data = pdfReportService.cashLedger(d);
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_PDF);
+        headers.setContentDisposition(ContentDisposition.attachment().filename("cash-ledger-" + d + ".pdf").build());
+        return ResponseEntity.ok().headers(headers).body(data);
     }
 }

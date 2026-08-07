@@ -1,7 +1,9 @@
 package com.fcms.service;
 
+import com.fcms.dto.CashLedgerSummary;
 import com.fcms.dto.DailyReport;
 import com.fcms.dto.DailyReportRow;
+import com.fcms.model.CashExpense;
 import com.fcms.model.Customer;
 import com.fcms.model.CustomerStatus;
 import com.fcms.model.Payment;
@@ -34,11 +36,14 @@ public class PdfReportService {
     private final CustomerRepository customerRepository;
     private final PaymentRepository paymentRepository;
     private final ReportService reportService;
+    private final CashLedgerService cashLedgerService;
 
-    public PdfReportService(CustomerRepository customerRepository, PaymentRepository paymentRepository, ReportService reportService) {
+    public PdfReportService(CustomerRepository customerRepository, PaymentRepository paymentRepository,
+                             ReportService reportService, CashLedgerService cashLedgerService) {
         this.customerRepository = customerRepository;
         this.paymentRepository = paymentRepository;
         this.reportService = reportService;
+        this.cashLedgerService = cashLedgerService;
     }
 
     private Color colorFor(PaymentType type) {
@@ -247,6 +252,106 @@ public class PdfReportService {
         }
     }
 
+    /**
+     * Cash Ledger PDF: today's collection, what was spent/sent, the balance left after
+     * spending, and the running total balance carried forward from previous days — plus a
+     * line-by-line list of every expense entry logged for the day.
+     */
+    public byte[] cashLedger(LocalDate date) {
+        CashLedgerSummary summary = cashLedgerService.summary(date);
+
+        float margin = 40f;
+        float rowHeight = 18f;
+        float pageWidth = PDRectangle.A4.getWidth();
+        float pageHeight = PDRectangle.A4.getHeight();
+        float usableWidth = pageWidth - 2 * margin;
+        int[] colUnits = {16, 14, 20, 16, 22, 12};
+        String[] headers = {"Category", "Amount", "Recipient", "Via", "Notes", "By"};
+        int totalUnits = 0;
+        for (int u : colUnits) totalUnits += u;
+        float[] colWidths = new float[colUnits.length];
+        for (int i = 0; i < colUnits.length; i++) colWidths[i] = usableWidth * colUnits[i] / (float) totalUnits;
+
+        try (ByteArrayOutputStream out = new ByteArrayOutputStream();
+             PDDocument document = new PDDocument()) {
+
+            PDPage page = new PDPage(PDRectangle.A4);
+            document.addPage(page);
+            PDPageContentStream stream = new PDPageContentStream(document, page);
+            float cursorY = pageHeight - margin;
+
+            // ---- Brand header banner ----
+            stream.setNonStrokingColor(PdfTableWriter.BRAND_COLOR);
+            stream.addRect(margin - 10, cursorY - 32, usableWidth + 20, 58);
+            stream.fill();
+            cursorY = drawLine(stream, margin, cursorY, "KR Finance", PDType1Font.HELVETICA_BOLD, 20, Color.WHITE, 22);
+            cursorY = drawLine(stream, margin, cursorY, "Cash Ledger  |  " + summary.getDate(), PDType1Font.HELVETICA, 11, new Color(219, 234, 254), 24);
+            cursorY -= 22;
+
+            // ---- Summary stat cards ----
+            float cardGap = 10f;
+            float cardWidth = (usableWidth - 3 * cardGap) / 4f;
+            float cardHeight = 46f;
+            double balanceAfterSpending = summary.getCollectedToday() - summary.getExpensesToday();
+            cursorY = drawStatCards(stream, margin, cursorY, cardWidth, cardHeight, cardGap,
+                    new String[]{"Collected Today", "Spent Today", "Balance After Spending", "Total Balance"},
+                    new String[]{fmt(summary.getCollectedToday()), fmt(summary.getExpensesToday()), fmt(balanceAfterSpending), fmt(summary.getClosingBalance())},
+                    new Color[]{PdfTableWriter.PAID_COLOR, PdfTableWriter.PENDING_COLOR, PdfTableWriter.PARTIAL_COLOR, PdfTableWriter.ADVANCE_COLOR});
+            cursorY -= 8;
+            cursorY = drawLine(stream, margin, cursorY,
+                    "Yesterday's Balance: " + fmt(summary.getOpeningBalance()) + "  +  Today's Net: " + fmt(balanceAfterSpending)
+                            + "  =  Total Balance: " + fmt(summary.getClosingBalance()),
+                    PDType1Font.HELVETICA_OBLIQUE, 9, Color.GRAY, 18);
+            cursorY -= 6;
+
+            // ---- Table header ----
+            cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0);
+
+            int rowIdx = 0;
+            for (CashExpense e : summary.getExpenses()) {
+                if (cursorY - rowHeight < margin) {
+                    stream.close();
+                    page = new PDPage(PDRectangle.A4);
+                    document.addPage(page);
+                    stream = new PDPageContentStream(document, page);
+                    cursorY = pageHeight - margin;
+                    cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0);
+                    rowIdx = 0;
+                }
+                String[] values = {
+                        e.getCategory() == null ? "-" : e.getCategory().name(),
+                        fmt(e.getAmount()),
+                        safe(e.getRecipientName()),
+                        safe(e.getSentVia()),
+                        safe(e.getNotes()),
+                        safe(e.getCreatedBy())
+                };
+                cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, values, PDType1Font.HELVETICA, Color.WHITE, Color.BLACK, false, rowIdx);
+                rowIdx++;
+            }
+            if (summary.getExpenses().isEmpty()) {
+                cursorY -= 4;
+                cursorY = drawLine(stream, margin, cursorY, "No entries for this day.", PDType1Font.HELVETICA_OBLIQUE, 9, Color.GRAY, 16);
+            }
+
+            cursorY -= 8;
+            if (cursorY - 16 < margin) {
+                stream.close();
+                page = new PDPage(PDRectangle.A4);
+                document.addPage(page);
+                stream = new PDPageContentStream(document, page);
+                cursorY = pageHeight - margin;
+            }
+            drawLine(stream, margin, cursorY, "Generated by KR Finance", PDType1Font.HELVETICA_OBLIQUE, 8, Color.GRAY, 12);
+            stream.close();
+
+            document.save(out);
+            return out.toByteArray();
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to generate cash ledger PDF", e);
+        }
+    }
+
     /** Three dashboard-style summary tiles side by side: label on top, big bold value, colored accent bar. */
     private float drawStatCards(PDPageContentStream stream, float margin, float cursorY, float cardWidth, float cardHeight,
                                  float gap, String[] labels, String[] values, Color[] accents) throws IOException {
@@ -312,13 +417,11 @@ public class PdfReportService {
         return y - advance;
     }
 
-    /**
-     * Which columns hold numeric amounts in the daily-collection table (Name, Daily Amt, Days
-     * Paid, Loan Amt, Total Paid, Balance, Today) — those get right-aligned so the digits line
-     * up by place value (e.g. 4,00,000 sits flush right against 30,000) instead of both starting
-     * flush left, which made it hard to compare amounts at a glance.
-     */
-    private static final boolean[] RIGHT_ALIGN_COLS = {false, true, false, true, true, true, false};
+    /** True for values that are basically a formatted number (amounts, percentages) — right-aligned so digits line up by place value column to column, instead of every value starting flush left. */
+    private boolean looksNumeric(String v) {
+        if (v == null || v.isBlank()) return false;
+        return v.matches("-?[0-9,]+(\\.[0-9]+)?%?");
+    }
 
     /**
      * isStatus rows (Paid/NotPaid/Partial/Advance) get a soft tinted background + colored left
@@ -359,7 +462,7 @@ public class PdfReportService {
             if (v.length() > maxChars) v = v.substring(0, maxChars - 1) + "...";
             String sanitized = sanitize(v);
 
-            boolean rightAlign = i < RIGHT_ALIGN_COLS.length && RIGHT_ALIGN_COLS[i];
+            boolean rightAlign = !isHeader && looksNumeric(sanitized);
             float textX;
             if (rightAlign) {
                 float textWidth = font.getStringWidth(sanitized) / 1000f * fontSize;
