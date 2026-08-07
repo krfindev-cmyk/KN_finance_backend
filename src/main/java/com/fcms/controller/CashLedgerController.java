@@ -59,6 +59,15 @@ public class CashLedgerController {
         cashLedgerService.deleteExpense(id);
     }
 
+    @PutMapping("/balance")
+    public CashLedgerSummary setBalance(@RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+                                         @RequestParam double targetBalance,
+                                         @RequestParam(defaultValue = "system") String editedBy,
+                                         @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        requireAdmin(authHeader);
+        return cashLedgerService.setBalance(date, targetBalance, editedBy);
+    }
+
     @GetMapping("/pdf")
     public ResponseEntity<byte[]> pdf(@RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
                                        @RequestHeader(value = "Authorization", required = false) String authHeader) {
