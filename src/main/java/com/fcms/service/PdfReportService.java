@@ -60,40 +60,182 @@ public class PdfReportService {
         return Color.WHITE;
     }
 
+    /** One payment tagged with which of the person's (possibly several) loans it belongs to. */
+    private static final class LoanPayment {
+        final int loanNo;
+        final Payment payment;
+        LoanPayment(int loanNo, Payment payment) { this.loanNo = loanNo; this.payment = payment; }
+    }
+
+    /**
+     * Customer Report PDF: same branded/aligned look as the Daily Collection report. If this
+     * person has more than one loan (grouped by groupKey — e.g. a repeat borrower), every loan
+     * is shown together in one consolidated report instead of forcing a separate PDF per loan:
+     * a summary card row for the combined totals, a per-loan table (loan amount, daily amount,
+     * days paid, total paid, balance, status), and one merged payment history across all loans.
+     */
     public byte[] customerStatement(Long customerId) {
-        Customer c = customerRepository.findById(customerId)
+        Customer anchor = customerRepository.findById(customerId)
                 .orElseThrow(() -> new IllegalArgumentException("Customer not found"));
-        List<Payment> payments = paymentRepository.findByCustomerIdOrderByDateDesc(customerId).stream()
-                .sorted(Comparator.comparing(Payment::getDate, Comparator.nullsLast(Comparator.naturalOrder())))
-                .toList();
+
+        List<Customer> loans = (anchor.getGroupKey() != null && !anchor.getGroupKey().isBlank())
+                ? customerRepository.findAllByGroupKeyOrderByStartDateAsc(anchor.getGroupKey())
+                : List.of(anchor);
+        if (loans.isEmpty()) loans = List.of(anchor);
+
+        double totalFinanced = 0, totalPaidAll = 0, totalPendingAll = 0;
+        for (Customer c : loans) {
+            totalFinanced += c.getFinanceAmount() == null ? 0 : c.getFinanceAmount();
+            totalPaidAll += c.getTotalPaid() == null ? 0 : c.getTotalPaid();
+            totalPendingAll += c.getPendingAmount() == null ? 0 : c.getPendingAmount();
+        }
+
+        List<LoanPayment> history = new java.util.ArrayList<>();
+        for (int i = 0; i < loans.size(); i++) {
+            for (Payment p : paymentRepository.findByCustomerIdOrderByDateDesc(loans.get(i).getId())) {
+                history.add(new LoanPayment(i + 1, p));
+            }
+        }
+        history.sort(Comparator.comparing((LoanPayment lp) -> lp.payment.getDate(), Comparator.nullsLast(Comparator.naturalOrder())));
+
+        float margin = 40f;
+        float rowHeight = 18f;
+        float pageWidth = PDRectangle.A4.getWidth();
+        float pageHeight = PDRectangle.A4.getHeight();
+        float usableWidth = pageWidth - 2 * margin;
+
+        int[] loanColUnits = {6, 15, 13, 12, 15, 15, 12};
+        String[] loanHeaders = {"S.No", "Loan Amt", "Daily Amt", "Days Paid", "Total Paid", "Balance", "Status"};
+        boolean[] loanRightAlign = {true, true, true, false, true, true, false};
+        float[] loanColWidths = scaledWidths(loanColUnits, usableWidth);
+
+        int[] payColUnits = {6, 10, 13, 12, 13, 22, 18};
+        String[] payHeaders = {"S.No", "Loan", "Date", "Type", "Amount", "Collected By", "Notes"};
+        boolean[] payRightAlign = {true, false, false, false, true, false, false};
+        float[] payColWidths = scaledWidths(payColUnits, usableWidth);
 
         try (ByteArrayOutputStream out = new ByteArrayOutputStream();
              PDDocument document = new PDDocument()) {
 
-            String title = "Customer Statement - " + safe(c.getName()) + " (" + safe(c.getMobile()) + ")"
-                    + " | Finance: " + fmt(c.getFinanceAmount()) + " | Next Due: " + str(c.getNextDueDate());
+            PDPage page = new PDPage(PDRectangle.A4);
+            document.addPage(page);
+            PDPageContentStream stream = new PDPageContentStream(document, page);
+            float cursorY = pageHeight - margin;
 
-            PdfTableWriter writer = new PdfTableWriter(document, title,
-                    new String[]{"S.No", "Date", "Type", "Amount", "Collected By", "Notes"},
-                    new int[]{6, 14, 14, 14, 18, 34},
-                    new boolean[]{true, false, false, true, false, false});
+            // ---- Brand header banner ----
+            stream.setNonStrokingColor(PdfTableWriter.BRAND_COLOR);
+            stream.addRect(margin - 10, cursorY - 32, usableWidth + 20, 58);
+            stream.fill();
+            cursorY = drawLine(stream, margin, cursorY, "KR Finance", PDType1Font.HELVETICA_BOLD, 20, Color.WHITE, 22);
+            String subtitle = "Customer Report  |  " + safe(anchor.getName()) + " (" + safe(anchor.getMobile()) + ")"
+                    + (loans.size() > 1 ? "  |  " + loans.size() + " loans" : "");
+            cursorY = drawLine(stream, margin, cursorY, subtitle, PDType1Font.HELVETICA, 11, new Color(219, 234, 254), 24);
+            cursorY -= 22;
 
-            double total = 0;
-            int sno = 1;
-            for (Payment p : payments) {
-                writer.addRow(new String[]{String.valueOf(sno++), str(p.getDate()), str(p.getType()), fmt(p.getAmount()), safe(p.getCollectedBy()), safe(p.getNotes())},
-                        colorFor(p.getType()), textColorFor(p.getType()));
-                if (p.getType() != PaymentType.NotPaid) total += p.getAmount() == null ? 0 : p.getAmount();
+            // ---- Combined summary stat cards ----
+            float cardGap = 10f;
+            float cardWidth = (usableWidth - 2 * cardGap) / 3f;
+            float cardHeight = 46f;
+            cursorY = drawStatCards(stream, margin, cursorY, cardWidth, cardHeight, cardGap,
+                    new String[]{"Total Financed (All Loans)", "Total Paid", "Pending Amount"},
+                    new String[]{fmt(totalFinanced), fmt(totalPaidAll), fmt(totalPendingAll)},
+                    new Color[]{PdfTableWriter.ADVANCE_COLOR, PdfTableWriter.PAID_COLOR, PdfTableWriter.PENDING_COLOR});
+            cursorY -= 16;
+
+            // ---- Per-loan table ----
+            cursorY = drawLine(stream, margin, cursorY, loans.size() > 1 ? "Loans" : "Loan", PDType1Font.HELVETICA_BOLD, 11, Color.DARK_GRAY, 16);
+            cursorY = drawTableRow(stream, margin, cursorY, rowHeight, loanColWidths, loanHeaders, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, loanRightAlign);
+            for (int i = 0; i < loans.size(); i++) {
+                if (cursorY - rowHeight < margin) {
+                    stream.close();
+                    page = new PDPage(PDRectangle.A4);
+                    document.addPage(page);
+                    stream = new PDPageContentStream(document, page);
+                    cursorY = pageHeight - margin;
+                    cursorY = drawTableRow(stream, margin, cursorY, rowHeight, loanColWidths, loanHeaders, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, loanRightAlign);
+                }
+                Customer c = loans.get(i);
+                String status = c.getStatus() == null ? "-" : c.getStatus().name();
+                String[] values = {
+                        String.valueOf(i + 1),
+                        fmt(c.getTotalAmount()),
+                        fmt(c.getInstallmentAmount()),
+                        (c.getPaidInstallments() == null ? "0" : c.getPaidInstallments()) + "/" + (c.getTotalInstallments() == null ? "-" : c.getTotalInstallments()),
+                        fmt(c.getTotalPaid()),
+                        fmt(c.getPendingAmount()),
+                        status
+                };
+                cursorY = drawTableRow(stream, margin, cursorY, rowHeight, loanColWidths, values, PDType1Font.HELVETICA, Color.WHITE, Color.BLACK, false, i, loanRightAlign);
             }
-            writer.addFooter("Total Paid: " + fmt(total) + "   |   Total Amount: " + fmt(c.getTotalAmount())
-                    + "   |   Pending: " + fmt(c.getPendingAmount()) + "   |   Next Due Date: " + str(c.getNextDueDate()));
-            writer.close();
+            cursorY -= 16;
+
+            // ---- Combined payment history across every loan ----
+            if (cursorY - rowHeight * 2 < margin) {
+                stream.close();
+                page = new PDPage(PDRectangle.A4);
+                document.addPage(page);
+                stream = new PDPageContentStream(document, page);
+                cursorY = pageHeight - margin;
+            }
+            cursorY = drawLine(stream, margin, cursorY, "Payment History", PDType1Font.HELVETICA_BOLD, 11, Color.DARK_GRAY, 16);
+            cursorY = drawTableRow(stream, margin, cursorY, rowHeight, payColWidths, payHeaders, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, payRightAlign);
+
+            int sno = 1;
+            int rowIdx = 0;
+            for (LoanPayment lp : history) {
+                if (cursorY - rowHeight < margin) {
+                    stream.close();
+                    page = new PDPage(PDRectangle.A4);
+                    document.addPage(page);
+                    stream = new PDPageContentStream(document, page);
+                    cursorY = pageHeight - margin;
+                    cursorY = drawTableRow(stream, margin, cursorY, rowHeight, payColWidths, payHeaders, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, payRightAlign);
+                    rowIdx = 0;
+                }
+                Payment p = lp.payment;
+                Color statusColor = colorFor(p.getType());
+                boolean isStatus = statusColor != PdfTableWriter.WHITE;
+                String[] values = {
+                        String.valueOf(sno++),
+                        loans.size() > 1 ? ("Loan " + lp.loanNo) : "-",
+                        str(p.getDate()),
+                        str(p.getType()),
+                        fmt(p.getAmount()),
+                        safe(p.getCollectedBy()),
+                        safe(p.getNotes())
+                };
+                cursorY = drawTableRow(stream, margin, cursorY, rowHeight, payColWidths, values, PDType1Font.HELVETICA, statusColor, isStatus ? statusColor : Color.BLACK, isStatus, rowIdx, payRightAlign);
+                rowIdx++;
+            }
+            if (history.isEmpty()) {
+                cursorY -= 4;
+                cursorY = drawLine(stream, margin, cursorY, "No payments recorded yet.", PDType1Font.HELVETICA_OBLIQUE, 9, Color.GRAY, 16);
+            }
+
+            cursorY -= 8;
+            if (cursorY - 16 < margin) {
+                stream.close();
+                page = new PDPage(PDRectangle.A4);
+                document.addPage(page);
+                stream = new PDPageContentStream(document, page);
+                cursorY = pageHeight - margin;
+            }
+            drawLine(stream, margin, cursorY, "Generated by KR Finance", PDType1Font.HELVETICA_OBLIQUE, 8, Color.GRAY, 12);
+            stream.close();
 
             document.save(out);
             return out.toByteArray();
         } catch (IOException e) {
             throw new RuntimeException("Failed to generate customer statement PDF", e);
         }
+    }
+
+    private float[] scaledWidths(int[] units, float usableWidth) {
+        int total = 0;
+        for (int u : units) total += u;
+        float[] widths = new float[units.length];
+        for (int i = 0; i < units.length; i++) widths[i] = usableWidth * units[i] / (float) total;
+        return widths;
     }
 
     public byte[] receipt(Long paymentId) {
@@ -138,11 +280,11 @@ public class PdfReportService {
         float rowHeight = 18f;
         float pageWidth = PDRectangle.A4.getWidth();
         float pageHeight = PDRectangle.A4.getHeight();
-        int[] colUnits = {6, 20, 14, 10, 14, 14, 14, 12};
-        String[] headers = {"S.No", "Name", "Daily Amt", "Days Paid", "Loan Amt", "Total Paid", "Balance", "Today"};
+        int[] colUnits = {6, 18, 12, 9, 12, 12, 12, 11, 10};
+        String[] headers = {"S.No", "Name", "Daily Amt", "Days Paid", "Loan Amt", "Total Paid", "Balance", "Paid Today", "Today"};
         // Header cells right-align in the same columns as their data below, so the column
         // heading sits flush above the numbers instead of drifting to the left of them.
-        boolean[] rightAlign = {true, false, true, false, true, true, true, false};
+        boolean[] rightAlign = {true, false, true, false, true, true, true, true, false};
         int totalUnits = 0;
         for (int u : colUnits) totalUnits += u;
         float usableWidth = pageWidth - 2 * margin;
@@ -185,8 +327,9 @@ public class PdfReportService {
             // ---- Table header ----
             cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, rightAlign);
 
-            int rowIdx = 0;
-            double sumDaily = 0, sumLoan = 0, sumPaid = 0, sumBalance = 0;
+            int rowIdx = 0; // resets each page — drives zebra striping only, which should restart per page
+            int sno = 1; // never resets — this is the S.No the user actually reads, continuous across pages
+            double sumDaily = 0, sumLoan = 0, sumPaid = 0, sumBalance = 0, sumPaidToday = 0;
             for (DailyReportRow row : report.getRows()) {
                 if (cursorY - rowHeight < margin) {
                     stream.close();
@@ -200,13 +343,14 @@ public class PdfReportService {
                 Color statusColor = statusColor(row.getTodayStatus());
                 boolean isStatus = statusColor != PdfTableWriter.WHITE;
                 String[] values = {
-                        String.valueOf(rowIdx + 1),
+                        String.valueOf(sno++),
                         safe(row.getName()),
                         fmt(row.getDailyCollection()),
                         (row.getDaysPaid() == null ? "0" : row.getDaysPaid()) + "/" + (row.getTotalInstallments() == null ? "-" : row.getTotalInstallments()),
                         fmt(row.getTotalLoanAmount()),
                         fmt(row.getTotalPaid()),
                         fmt(row.getBalanceAmount()),
+                        row.getTodayAmount() == null ? "-" : fmt(row.getTodayAmount()),
                         safe(row.getTodayStatus())
                 };
                 cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, values, PDType1Font.HELVETICA, statusColor, isStatus ? statusColor : Color.BLACK, isStatus, rowIdx, rightAlign);
@@ -216,6 +360,7 @@ public class PdfReportService {
                 sumLoan += row.getTotalLoanAmount() == null ? 0 : row.getTotalLoanAmount();
                 sumPaid += row.getTotalPaid() == null ? 0 : row.getTotalPaid();
                 sumBalance += row.getBalanceAmount() == null ? 0 : row.getBalanceAmount();
+                sumPaidToday += row.getTodayAmount() == null ? 0 : row.getTodayAmount();
             }
 
             // ---- Totals row — sums every numeric column except Days Paid, plus today's
@@ -237,6 +382,7 @@ public class PdfReportService {
                     fmt(sumLoan),
                     fmt(sumPaid),
                     fmt(sumBalance),
+                    fmt(sumPaidToday),
                     "P:" + report.getPaidCount() + " N:" + report.getNotPaidCount()
             };
             cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, totalsValues, PDType1Font.HELVETICA_BOLD, TOTALS_ROW_COLOR, Color.BLACK, false, 0, rightAlign);
@@ -316,6 +462,7 @@ public class PdfReportService {
             cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, rightAlign);
 
             int rowIdx = 0;
+            int sno = 1;
             for (CashExpense e : summary.getExpenses()) {
                 if (cursorY - rowHeight < margin) {
                     stream.close();
@@ -327,7 +474,7 @@ public class PdfReportService {
                     rowIdx = 0;
                 }
                 String[] values = {
-                        String.valueOf(rowIdx + 1),
+                        String.valueOf(sno++),
                         e.getCategory() == null ? "-" : e.getCategory().name(),
                         fmt(e.getAmount()),
                         safe(e.getRecipientName()),
