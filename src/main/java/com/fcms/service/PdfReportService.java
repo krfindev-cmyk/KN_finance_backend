@@ -161,9 +161,9 @@ public class PdfReportService {
         boolean[] loanHistRightAlign = {true, false, true, true, false, false};
         float[] loanHistColWidths = scaledWidths(loanHistUnits, usableWidth);
 
-        int[] txnUnits = {6, 13, 9, 11, 13, 24, 24};
-        String[] txnHeaders = {"S.No", "Date", "Loan", "Type", "Amount", "Collected By", "Notes"};
-        boolean[] txnRightAlign = {true, false, false, false, true, false, false};
+        int[] txnUnits = {8, 17, 12, 15, 17, 31};
+        String[] txnHeaders = {"S.No", "Date", "Loan", "Type", "Amount", "Collected By"};
+        boolean[] txnRightAlign = {true, false, false, false, true, false};
         float[] txnColWidths = scaledWidths(txnUnits, usableWidth);
 
         try (ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -291,8 +291,7 @@ public class PdfReportService {
                         loans.size() > 1 ? ("#" + String.format("%03d", lp.loanNo)) : "-",
                         str(p.getType()),
                         fmt(p.getAmount()),
-                        safe(p.getCollectedBy()),
-                        safe(p.getNotes())
+                        safe(p.getCollectedBy())
                 };
                 cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, txnColWidths, values, PDType1Font.HELVETICA, statusColor, isStatus ? statusColor : Color.BLACK, isStatus, rowIdx, txnRightAlign);
                 rowIdx++;
