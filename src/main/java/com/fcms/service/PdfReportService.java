@@ -67,12 +67,35 @@ public class PdfReportService {
         LoanPayment(int loanNo, Payment payment) { this.loanNo = loanNo; this.payment = payment; }
     }
 
+    /** A little mutable "where are we on the page" bundle so page-break helpers can update it in place. */
+    private static final class PdfCursor {
+        PDPage page;
+        PDPageContentStream stream;
+        float y;
+        PdfCursor(PDPage page, PDPageContentStream stream, float y) { this.page = page; this.stream = stream; this.y = y; }
+    }
+
+    private PdfCursor newCursorPage(PDDocument document, float pageHeight, float margin) throws IOException {
+        PDPage page = new PDPage(PDRectangle.A4);
+        document.addPage(page);
+        return new PdfCursor(page, new PDPageContentStream(document, page), pageHeight - margin);
+    }
+
+    private void ensureRoom(PdfCursor cur, PDDocument document, float pageHeight, float margin, float needed) throws IOException {
+        if (cur.y - needed < margin) {
+            cur.stream.close();
+            PdfCursor fresh = newCursorPage(document, pageHeight, margin);
+            cur.page = fresh.page;
+            cur.stream = fresh.stream;
+            cur.y = fresh.y;
+        }
+    }
+
     /**
-     * Customer Report PDF: same branded/aligned look as the Daily Collection report. If this
-     * person has more than one loan (grouped by groupKey — e.g. a repeat borrower), every loan
-     * is shown together in one consolidated report instead of forcing a separate PDF per loan:
-     * a summary card row for the combined totals, a per-loan table (loan amount, daily amount,
-     * days paid, total paid, balance, status), and one merged payment history across all loans.
+     * Customer Report PDF: full statement covering every one of this person's loans (grouped by
+     * groupKey) — customer details, an at-a-glance overall summary, a loan-wise summary table,
+     * each loan's own payment history broken out separately, a combined transaction history
+     * across all loans, and a final balance recap at the end.
      */
     public byte[] customerStatement(Long customerId) {
         Customer anchor = customerRepository.findById(customerId)
@@ -83,20 +106,40 @@ public class PdfReportService {
                 : List.of(anchor);
         if (loans.isEmpty()) loans = List.of(anchor);
 
-        double totalFinanced = 0, totalPaidAll = 0, totalPendingAll = 0;
+        LocalDate today = LocalDate.now();
+        double totalFinanced = 0, totalPaidAll = 0, totalPendingAll = 0, totalOverdue = 0;
+        int activeLoans = 0, completedLoans = 0;
+        LocalDate nextDue = null;
+        Double nextDueAmount = null;
         for (Customer c : loans) {
             totalFinanced += c.getFinanceAmount() == null ? 0 : c.getFinanceAmount();
             totalPaidAll += c.getTotalPaid() == null ? 0 : c.getTotalPaid();
             totalPendingAll += c.getPendingAmount() == null ? 0 : c.getPendingAmount();
-        }
-
-        List<LoanPayment> history = new java.util.ArrayList<>();
-        for (int i = 0; i < loans.size(); i++) {
-            for (Payment p : paymentRepository.findByCustomerIdOrderByDateDesc(loans.get(i).getId())) {
-                history.add(new LoanPayment(i + 1, p));
+            boolean overdue = c.getStatus() == CustomerStatus.Running && c.getNextDueDate() != null && c.getNextDueDate().isBefore(today);
+            if (overdue) totalOverdue += c.getPendingAmount() == null ? 0 : c.getPendingAmount();
+            if (c.getStatus() == CustomerStatus.Running) {
+                activeLoans++;
+                if (c.getNextDueDate() != null && (nextDue == null || c.getNextDueDate().isBefore(nextDue))) {
+                    nextDue = c.getNextDueDate();
+                    nextDueAmount = c.getInstallmentAmount();
+                }
+            } else {
+                completedLoans++;
             }
         }
-        history.sort(Comparator.comparing((LoanPayment lp) -> lp.payment.getDate(), Comparator.nullsLast(Comparator.naturalOrder())));
+
+        // Payments per loan (oldest first) for the per-loan history sections, plus one combined
+        // list (across every loan, tagged with which loan) for the transaction history section.
+        List<List<Payment>> paymentsByLoan = new java.util.ArrayList<>();
+        List<LoanPayment> allHistory = new java.util.ArrayList<>();
+        for (int i = 0; i < loans.size(); i++) {
+            List<Payment> payments = paymentRepository.findByCustomerIdOrderByDateDesc(loans.get(i).getId()).stream()
+                    .sorted(Comparator.comparing(Payment::getDate, Comparator.nullsLast(Comparator.naturalOrder())))
+                    .toList();
+            paymentsByLoan.add(payments);
+            for (Payment p : payments) allHistory.add(new LoanPayment(i + 1, p));
+        }
+        allHistory.sort(Comparator.comparing((LoanPayment lp) -> lp.payment.getDate(), Comparator.nullsLast(Comparator.naturalOrder())));
 
         float margin = 40f;
         float rowHeight = 18f;
@@ -104,124 +147,177 @@ public class PdfReportService {
         float pageHeight = PDRectangle.A4.getHeight();
         float usableWidth = pageWidth - 2 * margin;
 
-        int[] loanColUnits = {6, 15, 13, 12, 15, 15, 12};
-        String[] loanHeaders = {"S.No", "Loan Amt", "Daily Amt", "Days Paid", "Total Paid", "Balance", "Status"};
-        boolean[] loanRightAlign = {true, true, true, false, true, true, false};
+        float[] kvColWidths = scaledWidths(new int[]{45, 55}, usableWidth);
+        boolean[] kvRightAlign = {false, false};
+        boolean[] kvAmountRightAlign = {false, true};
+
+        int[] loanColUnits = {8, 15, 15, 12, 13, 13, 12, 12};
+        String[] loanHeaders = {"Loan", "Start Date", "Loan Amt", "Daily/EMI", "Paid", "Balance", "Days Paid", "Status"};
+        boolean[] loanRightAlign = {false, false, true, true, true, true, false, false};
         float[] loanColWidths = scaledWidths(loanColUnits, usableWidth);
 
-        int[] payColUnits = {6, 10, 13, 12, 13, 22, 18};
-        String[] payHeaders = {"S.No", "Loan", "Date", "Type", "Amount", "Collected By", "Notes"};
-        boolean[] payRightAlign = {true, false, false, false, true, false, false};
-        float[] payColWidths = scaledWidths(payColUnits, usableWidth);
+        int[] loanHistUnits = {8, 18, 18, 18, 18, 20};
+        String[] loanHistHeaders = {"S.No", "Date", "Due Amt", "Paid Amt", "Status", "Collected By"};
+        boolean[] loanHistRightAlign = {true, false, true, true, false, false};
+        float[] loanHistColWidths = scaledWidths(loanHistUnits, usableWidth);
+
+        int[] txnUnits = {6, 13, 9, 11, 13, 24, 24};
+        String[] txnHeaders = {"S.No", "Date", "Loan", "Type", "Amount", "Collected By", "Notes"};
+        boolean[] txnRightAlign = {true, false, false, false, true, false, false};
+        float[] txnColWidths = scaledWidths(txnUnits, usableWidth);
 
         try (ByteArrayOutputStream out = new ByteArrayOutputStream();
              PDDocument document = new PDDocument()) {
 
-            PDPage page = new PDPage(PDRectangle.A4);
-            document.addPage(page);
-            PDPageContentStream stream = new PDPageContentStream(document, page);
-            float cursorY = pageHeight - margin;
+            PdfCursor cur = newCursorPage(document, pageHeight, margin);
 
             // ---- Brand header banner ----
-            stream.setNonStrokingColor(PdfTableWriter.BRAND_COLOR);
-            stream.addRect(margin - 10, cursorY - 32, usableWidth + 20, 58);
-            stream.fill();
-            cursorY = drawLine(stream, margin, cursorY, "KR Finance", PDType1Font.HELVETICA_BOLD, 20, Color.WHITE, 22);
-            String subtitle = "Customer Report  |  " + safe(anchor.getName()) + " (" + safe(anchor.getMobile()) + ")"
-                    + (loans.size() > 1 ? "  |  " + loans.size() + " loans" : "");
-            cursorY = drawLine(stream, margin, cursorY, subtitle, PDType1Font.HELVETICA, 11, new Color(219, 234, 254), 24);
-            cursorY -= 22;
+            cur.stream.setNonStrokingColor(PdfTableWriter.BRAND_COLOR);
+            cur.stream.addRect(margin - 10, cur.y - 32, usableWidth + 20, 58);
+            cur.stream.fill();
+            cur.y = drawLine(cur.stream, margin, cur.y, "KR Finance", PDType1Font.HELVETICA_BOLD, 20, Color.WHITE, 22);
+            cur.y = drawLine(cur.stream, margin, cur.y, "Customer Report" + (loans.size() > 1 ? "  |  " + loans.size() + " loans" : ""),
+                    PDType1Font.HELVETICA, 11, new Color(219, 234, 254), 24);
+            cur.y -= 22;
 
-            // ---- Combined summary stat cards ----
-            float cardGap = 10f;
-            float cardWidth = (usableWidth - 2 * cardGap) / 3f;
-            float cardHeight = 46f;
-            cursorY = drawStatCards(stream, margin, cursorY, cardWidth, cardHeight, cardGap,
-                    new String[]{"Total Financed (All Loans)", "Total Paid", "Pending Amount"},
-                    new String[]{fmt(totalFinanced), fmt(totalPaidAll), fmt(totalPendingAll)},
-                    new Color[]{PdfTableWriter.ADVANCE_COLOR, PdfTableWriter.PAID_COLOR, PdfTableWriter.PENDING_COLOR});
-            cursorY -= 16;
+            // ---- 1. Customer Details ----
+            cur.y = drawLine(cur.stream, margin, cur.y, "Customer Details", PDType1Font.HELVETICA_BOLD, 12, Color.DARK_GRAY, 18);
+            String customerIdLabel = anchor.getGroupKey() != null && !anchor.getGroupKey().isBlank() ? anchor.getGroupKey() : String.valueOf(anchor.getId());
+            String[][] details = {
+                    {"Customer Name", safe(anchor.getName())},
+                    {"Customer ID", customerIdLabel},
+                    {"Mobile Number", safe(anchor.getMobile())},
+                    {"Address", safe(anchor.getAddress())},
+                    {"Report Generated Date", str(today)}
+            };
+            for (String[] row : details) {
+                ensureRoom(cur, document, pageHeight, margin, rowHeight);
+                cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, kvColWidths, row, PDType1Font.HELVETICA, Color.WHITE, Color.BLACK, false, 0, kvRightAlign);
+            }
+            cur.y -= 12;
 
-            // ---- Per-loan table ----
-            cursorY = drawLine(stream, margin, cursorY, loans.size() > 1 ? "Loans" : "Loan", PDType1Font.HELVETICA_BOLD, 11, Color.DARK_GRAY, 16);
-            cursorY = drawTableRow(stream, margin, cursorY, rowHeight, loanColWidths, loanHeaders, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, loanRightAlign);
+            // ---- 2. Overall Summary ----
+            ensureRoom(cur, document, pageHeight, margin, rowHeight * 8);
+            cur.y = drawLine(cur.stream, margin, cur.y, "Overall Summary", PDType1Font.HELVETICA_BOLD, 12, Color.DARK_GRAY, 18);
+            cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, kvColWidths, new String[]{"Summary", "Amount"}, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, kvRightAlign);
+            String[][] overall = {
+                    {"Total Loans", String.valueOf(loans.size())},
+                    {"Total Amount Financed", fmt(totalFinanced)},
+                    {"Total Amount Paid", fmt(totalPaidAll)},
+                    {"Total Balance", fmt(totalPendingAll)},
+                    {"Total Overdue", fmt(totalOverdue)},
+                    {"Active Loans", String.valueOf(activeLoans)},
+                    {"Completed Loans", String.valueOf(completedLoans)}
+            };
+            for (int i = 0; i < overall.length; i++) {
+                ensureRoom(cur, document, pageHeight, margin, rowHeight);
+                cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, kvColWidths, overall[i], PDType1Font.HELVETICA, Color.WHITE, Color.BLACK, false, i, kvAmountRightAlign);
+            }
+            cur.y -= 14;
+
+            // ---- 3. Loan-wise Summary ----
+            ensureRoom(cur, document, pageHeight, margin, rowHeight * 3);
+            cur.y = drawLine(cur.stream, margin, cur.y, "Loan-wise Summary", PDType1Font.HELVETICA_BOLD, 12, Color.DARK_GRAY, 18);
+            cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, loanColWidths, loanHeaders, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, loanRightAlign);
+            double sumLoanAmt = 0, sumLoanPaid = 0, sumLoanBalance = 0;
             for (int i = 0; i < loans.size(); i++) {
-                if (cursorY - rowHeight < margin) {
-                    stream.close();
-                    page = new PDPage(PDRectangle.A4);
-                    document.addPage(page);
-                    stream = new PDPageContentStream(document, page);
-                    cursorY = pageHeight - margin;
-                    cursorY = drawTableRow(stream, margin, cursorY, rowHeight, loanColWidths, loanHeaders, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, loanRightAlign);
-                }
+                ensureRoom(cur, document, pageHeight, margin, rowHeight);
                 Customer c = loans.get(i);
                 String status = c.getStatus() == null ? "-" : c.getStatus().name();
                 String[] values = {
-                        String.valueOf(i + 1),
+                        "Loan #" + String.format("%03d", i + 1),
+                        str(c.getStartDate()),
                         fmt(c.getTotalAmount()),
                         fmt(c.getInstallmentAmount()),
-                        (c.getPaidInstallments() == null ? "0" : c.getPaidInstallments()) + "/" + (c.getTotalInstallments() == null ? "-" : c.getTotalInstallments()),
                         fmt(c.getTotalPaid()),
                         fmt(c.getPendingAmount()),
+                        (c.getPaidInstallments() == null ? "0" : c.getPaidInstallments()) + "/" + (c.getTotalInstallments() == null ? "-" : c.getTotalInstallments()),
                         status
                 };
-                cursorY = drawTableRow(stream, margin, cursorY, rowHeight, loanColWidths, values, PDType1Font.HELVETICA, Color.WHITE, Color.BLACK, false, i, loanRightAlign);
+                cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, loanColWidths, values, PDType1Font.HELVETICA, Color.WHITE, Color.BLACK, false, i, loanRightAlign);
+                sumLoanAmt += c.getTotalAmount() == null ? 0 : c.getTotalAmount();
+                sumLoanPaid += c.getTotalPaid() == null ? 0 : c.getTotalPaid();
+                sumLoanBalance += c.getPendingAmount() == null ? 0 : c.getPendingAmount();
             }
-            cursorY -= 16;
+            ensureRoom(cur, document, pageHeight, margin, rowHeight);
+            String[] loanTotals = {"TOTAL", "", fmt(sumLoanAmt), "", fmt(sumLoanPaid), fmt(sumLoanBalance), "", ""};
+            cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, loanColWidths, loanTotals, PDType1Font.HELVETICA_BOLD, TOTALS_ROW_COLOR, Color.BLACK, false, 0, loanRightAlign);
 
-            // ---- Combined payment history across every loan ----
-            if (cursorY - rowHeight * 2 < margin) {
-                stream.close();
-                page = new PDPage(PDRectangle.A4);
-                document.addPage(page);
-                stream = new PDPageContentStream(document, page);
-                cursorY = pageHeight - margin;
-            }
-            cursorY = drawLine(stream, margin, cursorY, "Payment History", PDType1Font.HELVETICA_BOLD, 11, Color.DARK_GRAY, 16);
-            cursorY = drawTableRow(stream, margin, cursorY, rowHeight, payColWidths, payHeaders, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, payRightAlign);
-
-            int sno = 1;
-            int rowIdx = 0;
-            for (LoanPayment lp : history) {
-                if (cursorY - rowHeight < margin) {
-                    stream.close();
-                    page = new PDPage(PDRectangle.A4);
-                    document.addPage(page);
-                    stream = new PDPageContentStream(document, page);
-                    cursorY = pageHeight - margin;
-                    cursorY = drawTableRow(stream, margin, cursorY, rowHeight, payColWidths, payHeaders, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, payRightAlign);
-                    rowIdx = 0;
+            // ---- 4. Each loan's own payment history, starting fresh from the next page ----
+            cur.stream.close();
+            cur = newCursorPage(document, pageHeight, margin);
+            for (int i = 0; i < loans.size(); i++) {
+                Customer c = loans.get(i);
+                List<Payment> payments = paymentsByLoan.get(i);
+                ensureRoom(cur, document, pageHeight, margin, rowHeight * 2);
+                cur.y = drawLine(cur.stream, margin, cur.y, "Loan #" + String.format("%03d", i + 1) + "  —  " + fmt(c.getTotalAmount()), PDType1Font.HELVETICA_BOLD, 12, Color.DARK_GRAY, 18);
+                cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, loanHistColWidths, loanHistHeaders, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, loanHistRightAlign);
+                int rIdx = 0;
+                for (Payment p : payments) {
+                    ensureRoom(cur, document, pageHeight, margin, rowHeight);
+                    Color statusColor = colorFor(p.getType());
+                    boolean isStatus = statusColor != PdfTableWriter.WHITE;
+                    String[] values = {
+                            String.valueOf(rIdx + 1),
+                            str(p.getDate()),
+                            fmt(c.getInstallmentAmount()),
+                            fmt(p.getAmount()),
+                            str(p.getType()),
+                            safe(p.getCollectedBy())
+                    };
+                    cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, loanHistColWidths, values, PDType1Font.HELVETICA, statusColor, isStatus ? statusColor : Color.BLACK, isStatus, rIdx, loanHistRightAlign);
+                    rIdx++;
                 }
+                if (payments.isEmpty()) {
+                    cur.y -= 4;
+                    cur.y = drawLine(cur.stream, margin, cur.y, "No payments recorded for this loan yet.", PDType1Font.HELVETICA_OBLIQUE, 9, Color.GRAY, 16);
+                }
+                cur.y -= 16;
+            }
+
+            // ---- 5. Combined Payment Transaction History across every loan ----
+            ensureRoom(cur, document, pageHeight, margin, rowHeight * 3);
+            cur.y = drawLine(cur.stream, margin, cur.y, "Payment Transaction History", PDType1Font.HELVETICA_BOLD, 12, Color.DARK_GRAY, 18);
+            cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, txnColWidths, txnHeaders, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, txnRightAlign);
+            int sno = 1, rowIdx = 0;
+            for (LoanPayment lp : allHistory) {
+                ensureRoom(cur, document, pageHeight, margin, rowHeight);
                 Payment p = lp.payment;
                 Color statusColor = colorFor(p.getType());
                 boolean isStatus = statusColor != PdfTableWriter.WHITE;
                 String[] values = {
                         String.valueOf(sno++),
-                        loans.size() > 1 ? ("Loan " + lp.loanNo) : "-",
                         str(p.getDate()),
+                        loans.size() > 1 ? ("#" + String.format("%03d", lp.loanNo)) : "-",
                         str(p.getType()),
                         fmt(p.getAmount()),
                         safe(p.getCollectedBy()),
                         safe(p.getNotes())
                 };
-                cursorY = drawTableRow(stream, margin, cursorY, rowHeight, payColWidths, values, PDType1Font.HELVETICA, statusColor, isStatus ? statusColor : Color.BLACK, isStatus, rowIdx, payRightAlign);
+                cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, txnColWidths, values, PDType1Font.HELVETICA, statusColor, isStatus ? statusColor : Color.BLACK, isStatus, rowIdx, txnRightAlign);
                 rowIdx++;
             }
-            if (history.isEmpty()) {
-                cursorY -= 4;
-                cursorY = drawLine(stream, margin, cursorY, "No payments recorded yet.", PDType1Font.HELVETICA_OBLIQUE, 9, Color.GRAY, 16);
+            if (allHistory.isEmpty()) {
+                cur.y -= 4;
+                cur.y = drawLine(cur.stream, margin, cur.y, "No payments recorded yet.", PDType1Font.HELVETICA_OBLIQUE, 9, Color.GRAY, 16);
             }
+            cur.y -= 14;
 
-            cursorY -= 8;
-            if (cursorY - 16 < margin) {
-                stream.close();
-                page = new PDPage(PDRectangle.A4);
-                document.addPage(page);
-                stream = new PDPageContentStream(document, page);
-                cursorY = pageHeight - margin;
-            }
-            drawLine(stream, margin, cursorY, "Generated by KR Finance", PDType1Font.HELVETICA_OBLIQUE, 8, Color.GRAY, 12);
-            stream.close();
+            // ---- 6. Final Customer Balance ----
+            ensureRoom(cur, document, pageHeight, margin, rowHeight * 6);
+            cur.y = drawLine(cur.stream, margin, cur.y, "Final Customer Balance", PDType1Font.HELVETICA_BOLD, 12, Color.DARK_GRAY, 18);
+            cur.y = drawLine(cur.stream, margin, cur.y, "Total Amount Financed: " + fmt(totalFinanced), PDType1Font.HELVETICA_BOLD, 10, Color.BLACK, 16);
+            cur.y = drawLine(cur.stream, margin, cur.y, "Total Amount Collected: " + fmt(totalPaidAll), PDType1Font.HELVETICA_BOLD, 10, PdfTableWriter.PAID_COLOR, 16);
+            cur.y = drawLine(cur.stream, margin, cur.y, "Total Outstanding: " + fmt(totalPendingAll), PDType1Font.HELVETICA_BOLD, 10, PdfTableWriter.PENDING_COLOR, 16);
+            cur.y = drawLine(cur.stream, margin, cur.y, "Overdue Amount: " + fmt(totalOverdue), PDType1Font.HELVETICA_BOLD, 10, PdfTableWriter.PARTIAL_COLOR, 16);
+            cur.y = drawLine(cur.stream, margin, cur.y,
+                    "Next Payment Due: " + (nextDue != null ? str(nextDue) + " — " + fmt(nextDueAmount) : "N/A (no active loan)"),
+                    PDType1Font.HELVETICA_BOLD, 10, Color.BLACK, 16);
+
+            cur.y -= 10;
+            ensureRoom(cur, document, pageHeight, margin, 16);
+            drawLine(cur.stream, margin, cur.y, "Generated by KR Finance", PDType1Font.HELVETICA_OBLIQUE, 8, Color.GRAY, 12);
+            cur.stream.close();
 
             document.save(out);
             return out.toByteArray();
@@ -412,94 +508,180 @@ public class PdfReportService {
      */
     public byte[] cashLedger(LocalDate date) {
         CashLedgerSummary summary = cashLedgerService.summary(date);
+        LocalDate d = summary.getDate();
+
+        // Loan collections for the day: payments joined back to their customer for a name.
+        List<Payment> collections = paymentRepository.findByDate(d).stream()
+                .filter(p -> p.getType() != PaymentType.NotPaid)
+                .sorted(Comparator.comparing(Payment::getId))
+                .toList();
+        java.util.Map<Long, Customer> customerById = new java.util.HashMap<>();
+        for (Customer c : customerRepository.findAllById(collections.stream().map(Payment::getCustomerId).filter(java.util.Objects::nonNull).toList())) {
+            customerById.put(c.getId(), c);
+        }
+        double loanCollections = collections.stream().mapToDouble(p -> p.getAmount() == null ? 0 : p.getAmount()).sum();
+        double otherIncome = 0;
+        double totalInflow = loanCollections + otherIncome;
+        double totalOutflow = summary.getExpensesToday();
+
+        // Outflow grouped by category, in a stable display order.
+        java.util.LinkedHashMap<String, Double> outflowByCategory = new java.util.LinkedHashMap<>();
+        for (CashExpense e : summary.getExpenses()) {
+            String key = e.getCategory() == null ? "Other" : e.getCategory().name();
+            outflowByCategory.merge(key, e.getAmount() == null ? 0 : e.getAmount(), Double::sum);
+        }
+
+        boolean shortage = summary.getClosingBalance() < 0;
 
         float margin = 40f;
         float rowHeight = 18f;
         float pageWidth = PDRectangle.A4.getWidth();
         float pageHeight = PDRectangle.A4.getHeight();
         float usableWidth = pageWidth - 2 * margin;
-        int[] colUnits = {6, 16, 14, 18, 14, 20, 12};
-        String[] headers = {"S.No", "Category", "Amount", "Recipient", "Via", "Notes", "By"};
-        boolean[] rightAlign = {true, false, true, false, false, false, false};
-        int totalUnits = 0;
-        for (int u : colUnits) totalUnits += u;
-        float[] colWidths = new float[colUnits.length];
-        for (int i = 0; i < colUnits.length; i++) colWidths[i] = usableWidth * colUnits[i] / (float) totalUnits;
+
+        float[] kvColWidths = scaledWidths(new int[]{55, 45}, usableWidth);
+        boolean[] kvRightAlign = {false, true};
+
+        int[] txnUnits = {6, 14, 10, 20, 18, 12, 20};
+        String[] txnHeaders = {"S.No", "Date", "Type", "Description", "Person", "Mode", "Amount"};
+        boolean[] txnRightAlign = {true, false, false, false, false, false, true};
+        float[] txnColWidths = scaledWidths(txnUnits, usableWidth);
+
+        int[] loanColUnits = {6, 26, 14, 16, 14, 24};
+        String[] loanHeaders = {"S.No", "Customer", "Loan ID", "Amount", "Mode", "Collected By"};
+        boolean[] loanRightAlign = {true, false, true, true, false, false};
+        float[] loanColWidths = scaledWidths(loanColUnits, usableWidth);
 
         try (ByteArrayOutputStream out = new ByteArrayOutputStream();
              PDDocument document = new PDDocument()) {
 
-            PDPage page = new PDPage(PDRectangle.A4);
-            document.addPage(page);
-            PDPageContentStream stream = new PDPageContentStream(document, page);
-            float cursorY = pageHeight - margin;
+            PdfCursor cur = newCursorPage(document, pageHeight, margin);
 
-            // ---- Brand header banner ----
-            stream.setNonStrokingColor(PdfTableWriter.BRAND_COLOR);
-            stream.addRect(margin - 10, cursorY - 32, usableWidth + 20, 58);
-            stream.fill();
-            cursorY = drawLine(stream, margin, cursorY, "KR Finance", PDType1Font.HELVETICA_BOLD, 20, Color.WHITE, 22);
-            cursorY = drawLine(stream, margin, cursorY, "Cash Ledger  |  " + summary.getDate(), PDType1Font.HELVETICA, 11, new Color(219, 234, 254), 24);
-            cursorY -= 22;
-
-            // ---- Summary stat cards ----
-            float cardGap = 10f;
-            float cardWidth = (usableWidth - 3 * cardGap) / 4f;
-            float cardHeight = 46f;
-            double balanceAfterSpending = summary.getCollectedToday() - summary.getExpensesToday();
-            cursorY = drawStatCards(stream, margin, cursorY, cardWidth, cardHeight, cardGap,
-                    new String[]{"Collected Today", "Spent Today", "Balance After Spending", "Total Balance"},
-                    new String[]{fmt(summary.getCollectedToday()), fmt(summary.getExpensesToday()), fmt(balanceAfterSpending), fmt(summary.getClosingBalance())},
-                    new Color[]{PdfTableWriter.PAID_COLOR, PdfTableWriter.PENDING_COLOR, PdfTableWriter.PARTIAL_COLOR, PdfTableWriter.ADVANCE_COLOR});
-            cursorY -= 8;
-            cursorY = drawLine(stream, margin, cursorY,
-                    "Yesterday's Balance: " + fmt(summary.getOpeningBalance()) + "  +  Today's Net: " + fmt(balanceAfterSpending)
-                            + "  =  Total Balance: " + fmt(summary.getClosingBalance()),
+            // ---- Header ----
+            cur.stream.setNonStrokingColor(PdfTableWriter.BRAND_COLOR);
+            cur.stream.addRect(margin - 10, cur.y - 32, usableWidth + 20, 58);
+            cur.stream.fill();
+            cur.y = drawLine(cur.stream, margin, cur.y, "KR FINANCE", PDType1Font.HELVETICA_BOLD, 20, Color.WHITE, 22);
+            cur.y = drawLine(cur.stream, margin, cur.y, "CASH LEDGER STATEMENT", PDType1Font.HELVETICA, 11, new Color(219, 234, 254), 24);
+            cur.y -= 8;
+            cur.y = drawLine(cur.stream, margin, cur.y, "Date: " + str(d) + "        Generated: " + str(LocalDate.now()),
                     PDType1Font.HELVETICA_OBLIQUE, 9, Color.GRAY, 18);
-            cursorY -= 6;
+            cur.y -= 10;
 
-            // ---- Table header ----
-            cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, rightAlign);
+            // ---- CASH SUMMARY ----
+            cur.y = drawLine(cur.stream, margin, cur.y, "CASH SUMMARY", PDType1Font.HELVETICA_BOLD, 12, Color.DARK_GRAY, 18);
+            String[][] cashSummary = {
+                    {"Opening Balance", fmt(summary.getOpeningBalance())},
+                    {"Collections Received", fmt(summary.getCollectedToday())},
+                    {"Total Cash Available", fmt(summary.getOpeningBalance() + summary.getCollectedToday())},
+                    {"Cash Spent / Sent", fmt(summary.getExpensesToday())}
+            };
+            for (String[] row : cashSummary) {
+                ensureRoom(cur, document, pageHeight, margin, rowHeight);
+                cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, kvColWidths, row, PDType1Font.HELVETICA, Color.WHITE, Color.BLACK, false, 0, kvRightAlign);
+            }
+            ensureRoom(cur, document, pageHeight, margin, rowHeight * 2);
+            cur.y = drawLine(cur.stream, margin, cur.y, "----------------------------------------", PDType1Font.HELVETICA, 9, Color.LIGHT_GRAY, 12);
+            cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, kvColWidths,
+                    new String[]{"CLOSING BALANCE", fmt(summary.getClosingBalance())},
+                    PDType1Font.HELVETICA_BOLD, TOTALS_ROW_COLOR, shortage ? PdfTableWriter.PENDING_COLOR : PdfTableWriter.PAID_COLOR, false, 0, kvRightAlign);
+            if (shortage) {
+                ensureRoom(cur, document, pageHeight, margin, rowHeight);
+                cur.y = drawLine(cur.stream, margin, cur.y, "CASH SHORTAGE: " + fmt(Math.abs(summary.getClosingBalance())),
+                        PDType1Font.HELVETICA_BOLD, 10, PdfTableWriter.PENDING_COLOR, 16);
+            }
+            cur.y -= 12;
 
-            int rowIdx = 0;
-            int sno = 1;
+            // ---- CASH INFLOW ----
+            ensureRoom(cur, document, pageHeight, margin, rowHeight * 4);
+            cur.y = drawLine(cur.stream, margin, cur.y, "CASH INFLOW", PDType1Font.HELVETICA_BOLD, 12, Color.DARK_GRAY, 18);
+            cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, kvColWidths, new String[]{"Loan Collections", fmt(loanCollections)}, PDType1Font.HELVETICA, Color.WHITE, Color.BLACK, false, 0, kvRightAlign);
+            cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, kvColWidths, new String[]{"Other Income", fmt(otherIncome)}, PDType1Font.HELVETICA, Color.WHITE, Color.BLACK, false, 1, kvRightAlign);
+            cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, kvColWidths, new String[]{"TOTAL INFLOW", fmt(totalInflow)}, PDType1Font.HELVETICA_BOLD, TOTALS_ROW_COLOR, Color.BLACK, false, 0, kvRightAlign);
+            cur.y -= 12;
+
+            // ---- CASH OUTFLOW (by category) ----
+            ensureRoom(cur, document, pageHeight, margin, rowHeight * (outflowByCategory.size() + 3));
+            cur.y = drawLine(cur.stream, margin, cur.y, "CASH OUTFLOW", PDType1Font.HELVETICA_BOLD, 12, Color.DARK_GRAY, 18);
+            int oi = 0;
+            for (var entry : outflowByCategory.entrySet()) {
+                ensureRoom(cur, document, pageHeight, margin, rowHeight);
+                cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, kvColWidths, new String[]{entry.getKey(), fmt(entry.getValue())}, PDType1Font.HELVETICA, Color.WHITE, Color.BLACK, false, oi, kvRightAlign);
+                oi++;
+            }
+            if (outflowByCategory.isEmpty()) {
+                cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, kvColWidths, new String[]{"No outflow recorded", fmt(0.0)}, PDType1Font.HELVETICA_OBLIQUE, Color.WHITE, Color.GRAY, false, 0, kvRightAlign);
+            }
+            ensureRoom(cur, document, pageHeight, margin, rowHeight);
+            cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, kvColWidths, new String[]{"TOTAL OUTFLOW", fmt(totalOutflow)}, PDType1Font.HELVETICA_BOLD, TOTALS_ROW_COLOR, Color.BLACK, false, 0, kvRightAlign);
+            cur.y -= 14;
+
+            // ---- TRANSACTIONS ----
+            ensureRoom(cur, document, pageHeight, margin, rowHeight * 3);
+            cur.y = drawLine(cur.stream, margin, cur.y, "TRANSACTIONS", PDType1Font.HELVETICA_BOLD, 12, Color.DARK_GRAY, 18);
+            cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, txnColWidths, txnHeaders, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, txnRightAlign);
+            int sno = 1, rowIdx = 0;
             for (CashExpense e : summary.getExpenses()) {
-                if (cursorY - rowHeight < margin) {
-                    stream.close();
-                    page = new PDPage(PDRectangle.A4);
-                    document.addPage(page);
-                    stream = new PDPageContentStream(document, page);
-                    cursorY = pageHeight - margin;
-                    cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, headers, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, rightAlign);
-                    rowIdx = 0;
-                }
+                ensureRoom(cur, document, pageHeight, margin, rowHeight);
                 String[] values = {
                         String.valueOf(sno++),
+                        str(e.getDate()),
+                        "OUT",
                         e.getCategory() == null ? "-" : e.getCategory().name(),
-                        fmt(e.getAmount()),
                         safe(e.getRecipientName()),
                         safe(e.getSentVia()),
-                        safe(e.getNotes()),
-                        safe(e.getCreatedBy())
+                        fmt(e.getAmount())
                 };
-                cursorY = drawTableRow(stream, margin, cursorY, rowHeight, colWidths, values, PDType1Font.HELVETICA, Color.WHITE, Color.BLACK, false, rowIdx, rightAlign);
+                cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, txnColWidths, values, PDType1Font.HELVETICA, Color.WHITE, Color.BLACK, false, rowIdx, txnRightAlign);
                 rowIdx++;
             }
             if (summary.getExpenses().isEmpty()) {
-                cursorY -= 4;
-                cursorY = drawLine(stream, margin, cursorY, "No entries for this day.", PDType1Font.HELVETICA_OBLIQUE, 9, Color.GRAY, 16);
+                cur.y -= 4;
+                cur.y = drawLine(cur.stream, margin, cur.y, "No transactions for this day.", PDType1Font.HELVETICA_OBLIQUE, 9, Color.GRAY, 16);
             }
+            cur.y -= 14;
 
-            cursorY -= 8;
-            if (cursorY - 16 < margin) {
-                stream.close();
-                page = new PDPage(PDRectangle.A4);
-                document.addPage(page);
-                stream = new PDPageContentStream(document, page);
-                cursorY = pageHeight - margin;
+            // ---- LOAN COLLECTIONS ----
+            ensureRoom(cur, document, pageHeight, margin, rowHeight * 3);
+            cur.y = drawLine(cur.stream, margin, cur.y, "LOAN COLLECTIONS", PDType1Font.HELVETICA_BOLD, 12, Color.DARK_GRAY, 18);
+            cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, loanColWidths, loanHeaders, PDType1Font.HELVETICA_BOLD, PdfTableWriter.HEADER_COLOR, Color.WHITE, false, 0, loanRightAlign);
+            int lsno = 1, lRowIdx = 0;
+            for (Payment p : collections) {
+                ensureRoom(cur, document, pageHeight, margin, rowHeight);
+                Customer c = p.getCustomerId() == null ? null : customerById.get(p.getCustomerId());
+                String[] values = {
+                        String.valueOf(lsno++),
+                        c != null ? safe(c.getName()) : "-",
+                        p.getCustomerId() == null ? "-" : String.valueOf(p.getCustomerId()),
+                        fmt(p.getAmount()),
+                        "-",
+                        safe(p.getCollectedBy())
+                };
+                cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, loanColWidths, values, PDType1Font.HELVETICA, Color.WHITE, Color.BLACK, false, lRowIdx, loanRightAlign);
+                lRowIdx++;
             }
-            drawLine(stream, margin, cursorY, "Generated by KR Finance", PDType1Font.HELVETICA_OBLIQUE, 8, Color.GRAY, 12);
-            stream.close();
+            if (collections.isEmpty()) {
+                cur.y -= 4;
+                cur.y = drawLine(cur.stream, margin, cur.y, "No loan collections for this day.", PDType1Font.HELVETICA_OBLIQUE, 9, Color.GRAY, 16);
+            } else {
+                ensureRoom(cur, document, pageHeight, margin, rowHeight);
+                String[] loanTotals = {"TOTAL", "", "", fmt(loanCollections), "", ""};
+                cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, loanColWidths, loanTotals, PDType1Font.HELVETICA_BOLD, TOTALS_ROW_COLOR, Color.BLACK, false, 0, loanRightAlign);
+            }
+            cur.y -= 14;
+
+            // ---- CASH POSITION ----
+            ensureRoom(cur, document, pageHeight, margin, rowHeight * 4);
+            cur.y = drawLine(cur.stream, margin, cur.y, "CASH POSITION", PDType1Font.HELVETICA_BOLD, 12, Color.DARK_GRAY, 18);
+            cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, kvColWidths, new String[]{"Opening", fmt(summary.getOpeningBalance())}, PDType1Font.HELVETICA, Color.WHITE, Color.BLACK, false, 0, kvRightAlign);
+            cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, kvColWidths, new String[]{"+ Inflow", fmt(totalInflow)}, PDType1Font.HELVETICA, Color.WHITE, PdfTableWriter.PAID_COLOR, false, 1, kvRightAlign);
+            cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, kvColWidths, new String[]{"- Outflow", fmt(totalOutflow)}, PDType1Font.HELVETICA, Color.WHITE, PdfTableWriter.PENDING_COLOR, false, 0, kvRightAlign);
+            cur.y = drawTableRow(cur.stream, margin, cur.y, rowHeight, kvColWidths, new String[]{"Closing", fmt(summary.getClosingBalance())}, PDType1Font.HELVETICA_BOLD, TOTALS_ROW_COLOR, Color.BLACK, false, 0, kvRightAlign);
+
+            cur.y -= 10;
+            ensureRoom(cur, document, pageHeight, margin, 16);
+            drawLine(cur.stream, margin, cur.y, "Generated by KR Finance", PDType1Font.HELVETICA_OBLIQUE, 8, Color.GRAY, 12);
+            cur.stream.close();
 
             document.save(out);
             return out.toByteArray();
