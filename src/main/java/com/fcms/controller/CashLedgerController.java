@@ -52,6 +52,13 @@ public class CashLedgerController {
         return cashLedgerService.addExpense(expense, createdBy);
     }
 
+    @PutMapping("/expenses/{id}")
+    public CashExpense updateExpense(@PathVariable Long id, @RequestBody CashExpense expense,
+                                      @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        requireAdmin(authHeader);
+        return cashLedgerService.updateExpense(id, expense);
+    }
+
     @DeleteMapping("/expenses/{id}")
     public void deleteExpense(@PathVariable Long id,
                                @RequestHeader(value = "Authorization", required = false) String authHeader) {

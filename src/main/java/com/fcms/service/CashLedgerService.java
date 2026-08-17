@@ -96,6 +96,19 @@ public class CashLedgerService {
         cashExpenseRepository.deleteById(id);
     }
 
+    /** Updates an existing entry's fields in place (amount, category, recipient, mode, notes, date) — the entry's id/createdBy/createdAt stay as originally recorded. */
+    public CashExpense updateExpense(Long id, CashExpense updated) {
+        CashExpense existing = cashExpenseRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Cash entry not found: " + id));
+        if (updated.getDate() != null) existing.setDate(updated.getDate());
+        if (updated.getAmount() != null) existing.setAmount(updated.getAmount());
+        if (updated.getCategory() != null) existing.setCategory(updated.getCategory());
+        existing.setRecipientName(updated.getRecipientName());
+        existing.setSentVia(updated.getSentVia());
+        existing.setNotes(updated.getNotes());
+        return cashExpenseRepository.save(existing);
+    }
+
     /**
      * Directly sets the Total Balance (Carried Forward) for a given day to whatever the admin
      * types in — e.g. correcting it to match cash actually counted in hand. Under the hood this
