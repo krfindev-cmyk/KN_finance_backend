@@ -116,9 +116,10 @@ public class PaymentService {
         applyEffect(customer, payment);
         customer.setLastPaymentType(payment.getType().name());
 
+        Payment saved = paymentRepository.save(payment);
+        customer.setPaidInstallments(customerService.recomputePaidInstallments(customer, paymentRepository.findByCustomerIdOrderByDateDesc(customer.getId())));
         customerService.recomputeDerived(customer);
         customerRepository.save(customer);
-        Payment saved = paymentRepository.save(payment);
 
         auditService.log("Payment", saved.getId(), customer.getName(), "payment",
                 null, payment.getType() + " - " + payment.getAmount(), payment.getCollectedBy(),
@@ -138,7 +139,6 @@ public class PaymentService {
             customer.setLastPaymentAmount(amt);
 
             if (payment.getType() == PaymentType.Paid) {
-                customer.setPaidInstallments((customer.getPaidInstallments() == null ? 0 : customer.getPaidInstallments()) + 1);
                 customer.setNextDueDate(customerService.computeNextDueDate(payment.getDate(), customer.getFinanceType()));
             } else if (payment.getType() == PaymentType.Partial) {
                 // Doesn't fully cover the installment: due date stays as-is, still counts toward pending.
@@ -149,11 +149,13 @@ public class PaymentService {
                 } else {
                     int periodsCovered = Math.max(1, (int) Math.floor(amt / installmentAmount));
                     customer.setNextDueDate(customerService.computeNextDueDate(payment.getDate(), customer.getFinanceType(), periodsCovered));
-                    customer.setPaidInstallments((customer.getPaidInstallments() == null ? 0 : customer.getPaidInstallments()) + periodsCovered);
                 }
             }
         }
         // NotPaid: adds 0 to totalPaid; nextDueDate is left as whatever it already is (still due).
+        // "Days Paid" (paidInstallments) is NOT maintained here — it's recomputed from the actual
+        // payment history right after save (see recordPayment/editPayment/deletePayment) so it can
+        // never drift from what's really on record.
     }
 
     /** Undoes a previously-applied payment's effect — the inverse of applyEffect — before a same-day replacement is applied. */
@@ -164,13 +166,6 @@ public class PaymentService {
         if (counted) {
             double totalPaid = customer.getTotalPaid() == null ? 0 : customer.getTotalPaid();
             customer.setTotalPaid(Math.max(0, totalPaid - amt));
-        }
-        if (payment.getType() == PaymentType.Paid) {
-            customer.setPaidInstallments(Math.max(0, (customer.getPaidInstallments() == null ? 0 : customer.getPaidInstallments()) - 1));
-        } else if (payment.getType() == PaymentType.Advance) {
-            double installmentAmount = customer.getInstallmentAmount() == null ? 0 : customer.getInstallmentAmount();
-            int periods = installmentAmount > 0 ? Math.max(1, (int) Math.floor(amt / installmentAmount)) : 1;
-            customer.setPaidInstallments(Math.max(0, (customer.getPaidInstallments() == null ? 0 : customer.getPaidInstallments()) - periods));
         }
         // Reset nextDueDate back to this payment's own date — whatever the replacement payment
         // does next (applyEffect, or nothing for NotPaid) starts from the correct "still due" baseline.
@@ -225,9 +220,11 @@ public class PaymentService {
             auditService.log("Payment", payment.getId(), customer.getName(), "type",
                     oldType, req.getType(), req.getEditedBy(), req.getReason());
             payment.setType(req.getType());
-            // NOTE: paidInstallments / nextDueDate are intentionally left untouched on edit to avoid
-            // corrupting installment schedules already advanced by subsequent payments. This is a
-            // known simplification; only the totalPaid ledger is corrected below.
+            // NOTE: nextDueDate is intentionally left untouched on edit to avoid corrupting
+            // installment schedules already advanced by subsequent payments. "Days Paid" IS
+            // corrected below though, since it's now always recomputed from the actual payment
+            // history rather than incrementally tracked — an edited payment's new type/amount is
+            // reflected immediately instead of leaving the count stuck at its pre-edit value.
         }
 
         double delta = newContribution - oldContribution;
@@ -240,17 +237,20 @@ public class PaymentService {
         payment.setEditedBy(req.getEditedBy());
         payment.setEditReason(req.getReason());
 
+        Payment saved = paymentRepository.save(payment);
+        customer.setPaidInstallments(customerService.recomputePaidInstallments(customer, paymentRepository.findByCustomerIdOrderByDateDesc(customer.getId())));
         customerService.recomputeDerived(customer);
         customerRepository.save(customer);
 
-        return paymentRepository.save(payment);
+        return saved;
     }
 
     /**
      * Removes a marking entirely (used by the "remove marking" bulk action on the full
      * schedule) — reverses whatever this payment contributed to totalPaid, then deletes it,
      * putting that day's slot back to its natural Missed/Due/Pending state on the timeline.
-     * Like editPayment, this intentionally leaves paidInstallments/nextDueDate untouched.
+     * "Days Paid" is recomputed from what's left afterwards so a deleted "Paid" marking is no
+     * longer counted.
      */
     public void deletePayment(Long paymentId, String deletedBy, String reason) {
         Payment payment = paymentRepository.findById(paymentId)
@@ -269,8 +269,9 @@ public class PaymentService {
         auditService.log("Payment", payment.getId(), customer.getName(), "removed",
                 payment.getType() + " - " + payment.getAmount(), null, deletedBy, reason);
 
+        paymentRepository.delete(payment);
+        customer.setPaidInstallments(customerService.recomputePaidInstallments(customer, paymentRepository.findByCustomerIdOrderByDateDesc(customer.getId())));
         customerService.recomputeDerived(customer);
         customerRepository.save(customer);
-        paymentRepository.delete(payment);
     }
 }
