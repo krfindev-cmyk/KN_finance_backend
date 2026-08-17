@@ -8,6 +8,9 @@ public class NaveenDashboard {
     private int activeLoans;
     private int activeBorrowings;
     private int activeSuppliers;
+    private double totalAmount;
+    private double totalPaid;
+    private double totalPending;
 
     public double getCashAvailable() { return cashAvailable; }
     public void setCashAvailable(double cashAvailable) { this.cashAvailable = cashAvailable; }
@@ -23,4 +26,10 @@ public class NaveenDashboard {
     public void setActiveBorrowings(int activeBorrowings) { this.activeBorrowings = activeBorrowings; }
     public int getActiveSuppliers() { return activeSuppliers; }
     public void setActiveSuppliers(int activeSuppliers) { this.activeSuppliers = activeSuppliers; }
+    public double getTotalAmount() { return totalAmount; }
+    public void setTotalAmount(double totalAmount) { this.totalAmount = totalAmount; }
+    public double getTotalPaid() { return totalPaid; }
+    public void setTotalPaid(double totalPaid) { this.totalPaid = totalPaid; }
+    public double getTotalPending() { return totalPending; }
+    public void setTotalPending(double totalPending) { this.totalPending = totalPending; }
 }

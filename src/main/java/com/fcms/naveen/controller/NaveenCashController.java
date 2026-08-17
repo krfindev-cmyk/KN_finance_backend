@@ -50,4 +50,18 @@ public class NaveenCashController {
         requireAdmin(authHeader);
         cashService.deleteEntry(id);
     }
+
+    @PutMapping("/entries/{id}")
+    public NaveenCashEntry updateEntry(@PathVariable Long id, @RequestBody NaveenCashEntry entry,
+                                        @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        requireAdmin(authHeader);
+        return cashService.updateEntry(id, entry);
+    }
+
+    /** Plain list of every expense ever logged, for the Expenses page (no per-day ledger math). */
+    @GetMapping("/entries")
+    public java.util.List<NaveenCashEntry> listEntries(@RequestHeader(value = "Authorization", required = false) String authHeader) {
+        requireAdmin(authHeader);
+        return cashService.listAll();
+    }
 }

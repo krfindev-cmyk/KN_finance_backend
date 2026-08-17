@@ -9,4 +9,5 @@ import java.util.List;
 public interface NaveenCashEntryRepository extends JpaRepository<NaveenCashEntry, Long> {
     List<NaveenCashEntry> findByDateOrderByCreatedAtDesc(LocalDate date);
     List<NaveenCashEntry> findByDateBefore(LocalDate date);
+    List<NaveenCashEntry> findAllByOrderByDateDescCreatedAtDesc();
 }

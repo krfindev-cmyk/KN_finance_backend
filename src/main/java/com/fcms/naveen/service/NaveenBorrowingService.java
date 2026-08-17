@@ -62,9 +62,47 @@ public class NaveenBorrowingService {
         return repaymentRepository.save(repayment);
     }
 
+    public NaveenBorrowing updateBorrowing(Long id, NaveenBorrowing updated) {
+        NaveenBorrowing existing = borrowingRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Borrowing not found"));
+        existing.setLenderName(updated.getLenderName());
+        existing.setMobile(updated.getMobile());
+        if (updated.getAmount() != null) existing.setAmount(updated.getAmount());
+        if (updated.getDate() != null) existing.setDate(updated.getDate());
+        existing.setInterestPercent(updated.getInterestPercent());
+        existing.setNotes(updated.getNotes());
+        return borrowingRepository.save(existing);
+    }
+
+    public void deleteBorrowing(Long id) {
+        repaymentRepository.deleteAll(repaymentRepository.findByBorrowingIdOrderByDateDesc(id));
+        borrowingRepository.deleteById(id);
+    }
+
+    public NaveenBorrowingRepayment updateRepayment(Long id, NaveenBorrowingRepayment updated) {
+        NaveenBorrowingRepayment existing = repaymentRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Repayment not found"));
+        if (updated.getDate() != null) existing.setDate(updated.getDate());
+        if (updated.getAmount() != null) existing.setAmount(updated.getAmount());
+        existing.setNotes(updated.getNotes());
+        return repaymentRepository.save(existing);
+    }
+
+    public void deleteRepayment(Long id) {
+        repaymentRepository.deleteById(id);
+    }
+
     public double totalOutstandingBalance() {
         return borrowingRepository.findAll().stream()
                 .mapToDouble(b -> summarize(b).getBalance())
                 .sum();
+    }
+
+    public double totalPayableAll() {
+        return borrowingRepository.findAll().stream().mapToDouble(b -> summarize(b).getTotalPayable()).sum();
+    }
+
+    public double totalRepaidAll() {
+        return borrowingRepository.findAll().stream().mapToDouble(b -> summarize(b).getTotalRepaid()).sum();
     }
 }

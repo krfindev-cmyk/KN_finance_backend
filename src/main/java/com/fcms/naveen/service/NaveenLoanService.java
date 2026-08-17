@@ -139,10 +139,67 @@ public class NaveenLoanService {
         }
     }
 
+    public NaveenLoan updateLoan(Long id, NaveenLoan updated) {
+        NaveenLoan existing = loanRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Loan not found"));
+        existing.setBorrowerName(updated.getBorrowerName());
+        existing.setMobile(updated.getMobile());
+        existing.setAddress(updated.getAddress());
+        if (updated.getAmount() != null) existing.setAmount(updated.getAmount());
+        if (updated.getInstallmentAmount() != null) existing.setInstallmentAmount(updated.getInstallmentAmount());
+        if (updated.getTotalInstallments() != null) existing.setTotalInstallments(updated.getTotalInstallments());
+        if (updated.getFrequency() != null) existing.setFrequency(updated.getFrequency());
+        recompute(existing);
+        return loanRepository.save(existing);
+    }
+
+    public void deleteLoan(Long id) {
+        paymentRepository.deleteAll(paymentRepository.findByLoanIdOrderByDateDesc(id));
+        loanRepository.deleteById(id);
+    }
+
+    /** Reverses a specific collection's effect on its loan's running totals, then deletes it. */
+    public void deleteLoanPayment(Long paymentId) {
+        NaveenLoanPayment payment = paymentRepository.findById(paymentId)
+                .orElseThrow(() -> new IllegalArgumentException("Payment not found"));
+        NaveenLoan loan = loanRepository.findById(payment.getLoanId())
+                .orElseThrow(() -> new IllegalArgumentException("Loan not found"));
+        reverse(loan, payment);
+        recompute(loan);
+        loanRepository.save(loan);
+        paymentRepository.delete(payment);
+    }
+
+    /** Edits an existing collection's amount/date/type/notes, reapplying the loan's totals from scratch. */
+    public NaveenLoanPayment updateLoanPayment(Long paymentId, NaveenLoanPayment updated) {
+        NaveenLoanPayment payment = paymentRepository.findById(paymentId)
+                .orElseThrow(() -> new IllegalArgumentException("Payment not found"));
+        NaveenLoan loan = loanRepository.findById(payment.getLoanId())
+                .orElseThrow(() -> new IllegalArgumentException("Loan not found"));
+        reverse(loan, payment);
+        if (updated.getDate() != null) payment.setDate(updated.getDate());
+        if (updated.getAmount() != null) payment.setAmount(updated.getAmount());
+        if (updated.getType() != null) payment.setType(updated.getType());
+        if (updated.getCollectedBy() != null) payment.setCollectedBy(updated.getCollectedBy());
+        payment.setNotes(updated.getNotes());
+        apply(loan, payment);
+        recompute(loan);
+        loanRepository.save(loan);
+        return paymentRepository.save(payment);
+    }
+
     public double totalOutstandingReceivable() {
         return loanRepository.findAll().stream()
                 .mapToDouble(l -> l.getPendingAmount() == null ? 0 : l.getPendingAmount())
                 .sum();
+    }
+
+    public double totalAmountAll() {
+        return loanRepository.findAll().stream().mapToDouble(l -> l.getAmount() == null ? 0 : l.getAmount()).sum();
+    }
+
+    public double totalPaidAll() {
+        return loanRepository.findAll().stream().mapToDouble(l -> l.getTotalPaid() == null ? 0 : l.getTotalPaid()).sum();
     }
 
     public List<NaveenLoanPayment> paymentsOn(java.time.LocalDate date) {

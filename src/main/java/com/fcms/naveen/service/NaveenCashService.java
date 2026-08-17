@@ -117,6 +117,30 @@ public class NaveenCashService {
         cashEntryRepository.deleteById(id);
     }
 
+    /** Every expense entry ever logged, most recent first — the plain "daily spending" list shown on the Expenses page. */
+    public List<NaveenCashEntry> listAll() {
+        return cashEntryRepository.findAllByOrderByDateDescCreatedAtDesc();
+    }
+
+    public NaveenCashEntry updateEntry(Long id, NaveenCashEntry updated) {
+        NaveenCashEntry existing = cashEntryRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Expense entry not found"));
+        if (updated.getDate() != null) existing.setDate(updated.getDate());
+        if (updated.getDirection() != null) existing.setDirection(updated.getDirection());
+        if (updated.getCategory() != null) existing.setCategory(updated.getCategory());
+        if (updated.getAmount() != null) existing.setAmount(updated.getAmount());
+        existing.setNotes(updated.getNotes());
+        return cashEntryRepository.save(existing);
+    }
+
+    /** Total of every expense (OUT) entry ever logged — the headline number on the Expenses page. */
+    public double totalExpenses() {
+        return round2(listAll().stream()
+                .filter(e -> e.getDirection() == NaveenCashDirection.OUT)
+                .mapToDouble(e -> e.getAmount() == null ? 0 : e.getAmount())
+                .sum());
+    }
+
     private double round2(double v) {
         return Math.round(v * 100.0) / 100.0;
     }

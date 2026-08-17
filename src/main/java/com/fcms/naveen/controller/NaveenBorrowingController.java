@@ -56,4 +56,30 @@ public class NaveenBorrowingController {
         repayment.setBorrowingId(id);
         return borrowingService.addRepayment(repayment, createdBy);
     }
+
+    @PutMapping("/{id}")
+    public NaveenBorrowing updateBorrowing(@PathVariable Long id, @RequestBody NaveenBorrowing borrowing,
+                                            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        requireAdmin(authHeader);
+        return borrowingService.updateBorrowing(id, borrowing);
+    }
+
+    @DeleteMapping("/{id}")
+    public void deleteBorrowing(@PathVariable Long id, @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        requireAdmin(authHeader);
+        borrowingService.deleteBorrowing(id);
+    }
+
+    @PutMapping("/repayments/{repaymentId}")
+    public NaveenBorrowingRepayment updateRepayment(@PathVariable Long repaymentId, @RequestBody NaveenBorrowingRepayment repayment,
+                                                     @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        requireAdmin(authHeader);
+        return borrowingService.updateRepayment(repaymentId, repayment);
+    }
+
+    @DeleteMapping("/repayments/{repaymentId}")
+    public void deleteRepayment(@PathVariable Long repaymentId, @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        requireAdmin(authHeader);
+        borrowingService.deleteRepayment(repaymentId);
+    }
 }

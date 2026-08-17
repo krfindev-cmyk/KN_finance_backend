@@ -42,6 +42,12 @@ public class NaveenDashboardService {
         d.setActiveLoans((int) loanRepository.findAll().stream().filter(l -> l.getStatus() == NaveenLoanStatus.Running).count());
         d.setActiveBorrowings(borrowingRepository.findAll().size());
         d.setActiveSuppliers(supplierRepository.findAll().size());
+
+        double totalAmount = loanService.totalAmountAll() + borrowingService.totalPayableAll() + supplierService.totalPurchasesAll();
+        double totalPaid = loanService.totalPaidAll() + borrowingService.totalRepaidAll() + supplierService.totalPaidAll();
+        d.setTotalAmount(totalAmount);
+        d.setTotalPaid(totalPaid);
+        d.setTotalPending(Math.max(0, totalAmount - totalPaid));
         return d;
     }
 }

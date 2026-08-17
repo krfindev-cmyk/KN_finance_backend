@@ -66,4 +66,43 @@ public class NaveenSupplierController {
         payment.setSupplierId(id);
         return supplierService.addPayment(payment, createdBy);
     }
+
+    @PutMapping("/{id}")
+    public NaveenSupplier updateSupplier(@PathVariable Long id, @RequestBody NaveenSupplier supplier,
+                                          @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        requireAdmin(authHeader);
+        return supplierService.updateSupplier(id, supplier);
+    }
+
+    @DeleteMapping("/{id}")
+    public void deleteSupplier(@PathVariable Long id, @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        requireAdmin(authHeader);
+        supplierService.deleteSupplier(id);
+    }
+
+    @PutMapping("/purchases/{purchaseId}")
+    public NaveenSupplierPurchase updatePurchase(@PathVariable Long purchaseId, @RequestBody NaveenSupplierPurchase purchase,
+                                                  @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        requireAdmin(authHeader);
+        return supplierService.updatePurchase(purchaseId, purchase);
+    }
+
+    @DeleteMapping("/purchases/{purchaseId}")
+    public void deletePurchase(@PathVariable Long purchaseId, @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        requireAdmin(authHeader);
+        supplierService.deletePurchase(purchaseId);
+    }
+
+    @PutMapping("/payments/{paymentId}")
+    public NaveenSupplierPayment updatePayment(@PathVariable Long paymentId, @RequestBody NaveenSupplierPayment payment,
+                                                @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        requireAdmin(authHeader);
+        return supplierService.updatePayment(paymentId, payment);
+    }
+
+    @DeleteMapping("/payments/{paymentId}")
+    public void deletePayment(@PathVariable Long paymentId, @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        requireAdmin(authHeader);
+        supplierService.deletePayment(paymentId);
+    }
 }

@@ -76,9 +76,65 @@ public class NaveenSupplierService {
         return paymentRepository.save(payment);
     }
 
+    public NaveenSupplier updateSupplier(Long id, NaveenSupplier updated) {
+        NaveenSupplier existing = supplierRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Supplier not found"));
+        existing.setName(updated.getName());
+        existing.setMobile(updated.getMobile());
+        existing.setAddress(updated.getAddress());
+        return supplierRepository.save(existing);
+    }
+
+    public void deleteSupplier(Long id) {
+        purchaseRepository.deleteAll(purchaseRepository.findBySupplierIdOrderByDateDesc(id));
+        paymentRepository.deleteAll(paymentRepository.findBySupplierIdOrderByDateDesc(id));
+        supplierRepository.deleteById(id);
+    }
+
+    public NaveenSupplierPurchase updatePurchase(Long id, NaveenSupplierPurchase updated) {
+        NaveenSupplierPurchase existing = purchaseRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Purchase not found"));
+        if (updated.getDate() != null) existing.setDate(updated.getDate());
+        if (updated.getItem() != null) existing.setItem(updated.getItem());
+        if (updated.getQty() != null) existing.setQty(updated.getQty());
+        if (updated.getRate() != null) existing.setRate(updated.getRate());
+        if (updated.getAmount() != null) {
+            existing.setAmount(updated.getAmount());
+        } else if (updated.getQty() != null && updated.getRate() != null) {
+            existing.setAmount(updated.getQty() * updated.getRate());
+        }
+        existing.setNotes(updated.getNotes());
+        return purchaseRepository.save(existing);
+    }
+
+    public void deletePurchase(Long id) {
+        purchaseRepository.deleteById(id);
+    }
+
+    public NaveenSupplierPayment updatePayment(Long id, NaveenSupplierPayment updated) {
+        NaveenSupplierPayment existing = paymentRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Payment not found"));
+        if (updated.getDate() != null) existing.setDate(updated.getDate());
+        if (updated.getAmount() != null) existing.setAmount(updated.getAmount());
+        existing.setNotes(updated.getNotes());
+        return paymentRepository.save(existing);
+    }
+
+    public void deletePayment(Long id) {
+        paymentRepository.deleteById(id);
+    }
+
     public double totalOutstandingBalance() {
         return supplierRepository.findAll().stream()
                 .mapToDouble(s -> summarize(s).getBalance())
                 .sum();
+    }
+
+    public double totalPurchasesAll() {
+        return supplierRepository.findAll().stream().mapToDouble(s -> summarize(s).getTotalPurchases()).sum();
+    }
+
+    public double totalPaidAll() {
+        return supplierRepository.findAll().stream().mapToDouble(s -> summarize(s).getTotalPaid()).sum();
     }
 }
