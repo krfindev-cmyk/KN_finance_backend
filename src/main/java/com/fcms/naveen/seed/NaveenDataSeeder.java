@@ -1,9 +1,12 @@
 package com.fcms.naveen.seed;
 
+import com.fcms.naveen.dto.BillRequest;
 import com.fcms.naveen.model.*;
+import com.fcms.naveen.repository.NaveenBillRepository;
 import com.fcms.naveen.repository.NaveenBorrowingRepository;
 import com.fcms.naveen.repository.NaveenLoanRepository;
 import com.fcms.naveen.repository.NaveenSupplierRepository;
+import com.fcms.naveen.service.NaveenBillService;
 import com.fcms.naveen.service.NaveenBorrowingService;
 import com.fcms.naveen.service.NaveenCashService;
 import com.fcms.naveen.service.NaveenLoanService;
@@ -13,6 +16,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
+import java.util.List;
 
 /**
  * Seeds a handful of realistic sample entries into Naveen's business section on first run
@@ -25,30 +29,62 @@ public class NaveenDataSeeder implements CommandLineRunner {
     private final NaveenSupplierRepository supplierRepository;
     private final NaveenBorrowingRepository borrowingRepository;
     private final NaveenLoanRepository loanRepository;
+    private final NaveenBillRepository billRepository;
     private final NaveenSupplierService supplierService;
     private final NaveenBorrowingService borrowingService;
     private final NaveenLoanService loanService;
     private final NaveenCashService cashService;
+    private final NaveenBillService billService;
 
     public NaveenDataSeeder(NaveenSupplierRepository supplierRepository, NaveenBorrowingRepository borrowingRepository,
-                             NaveenLoanRepository loanRepository, NaveenSupplierService supplierService,
-                             NaveenBorrowingService borrowingService, NaveenLoanService loanService,
-                             NaveenCashService cashService) {
+                             NaveenLoanRepository loanRepository, NaveenBillRepository billRepository,
+                             NaveenSupplierService supplierService, NaveenBorrowingService borrowingService,
+                             NaveenLoanService loanService, NaveenCashService cashService, NaveenBillService billService) {
         this.supplierRepository = supplierRepository;
         this.borrowingRepository = borrowingRepository;
         this.loanRepository = loanRepository;
+        this.billRepository = billRepository;
         this.supplierService = supplierService;
         this.borrowingService = borrowingService;
         this.loanService = loanService;
         this.cashService = cashService;
+        this.billService = billService;
     }
 
     @Override
     public void run(String... args) {
-        if (supplierRepository.count() == 0) seedSuppliers();
+        boolean firstRun = supplierRepository.count() == 0;
+        if (firstRun) seedSuppliers();
         if (borrowingRepository.count() == 0) seedBorrowings();
         if (loanRepository.count() == 0) seedLoans();
+        if (firstRun && billRepository.count() == 0) seedBills();
         seedCashEntries();
+    }
+
+    /** One sample itemized invoice against the first seeded supplier, so the Billing tab isn't empty. */
+    private void seedBills() {
+        List<NaveenSupplier> suppliers = supplierRepository.findAll();
+        if (suppliers.isEmpty()) return;
+        NaveenSupplier supplier = suppliers.get(0);
+
+        BillRequest req = new BillRequest();
+        req.setSupplierId(supplier.getId());
+        req.setDate(LocalDate.now().minusDays(1));
+        NaveenBillItem tomato = new NaveenBillItem();
+        tomato.setItem("Tomato");
+        tomato.setQty(50.0);
+        tomato.setRate(30.0);
+        NaveenBillItem onion = new NaveenBillItem();
+        onion.setItem("Onion");
+        onion.setQty(20.0);
+        onion.setRate(40.0);
+        NaveenBillItem carrot = new NaveenBillItem();
+        carrot.setItem("Carrot");
+        carrot.setQty(15.0);
+        carrot.setRate(35.0);
+        req.setItems(List.of(tomato, onion, carrot));
+
+        billService.createBill(req, "Naveen");
     }
 
     private void seedSuppliers() {
@@ -172,26 +208,23 @@ public class NaveenDataSeeder implements CommandLineRunner {
         loanService.recordPayment(p);
     }
 
-    /** A couple of manual cash entries for today, so the Cash Ledger tab isn't empty on first load. */
+    /** A couple of sample daily-spending entries, so the Expenses tab isn't empty on first load. */
     private void seedCashEntries() {
+        if (!cashService.listAll().isEmpty()) return;
         LocalDate today = LocalDate.now();
-        boolean alreadySeeded = !cashService.summary(today).getEntries().isEmpty();
-        if (alreadySeeded) return;
 
-        NaveenCashEntry sale = new NaveenCashEntry();
-        sale.setDate(today);
-        sale.setDirection(NaveenCashDirection.IN);
-        sale.setCategory("Vegetable Sale");
-        sale.setAmount(1500.0);
-        sale.setNotes("Sample entry");
-        cashService.addEntry(sale, "Naveen");
+        addExpense(today, "Petrol", 300.0, "Sample entry — bike fuel for deliveries");
+        addExpense(today.minusDays(1), "Food", 150.0, "Sample entry — lunch");
+        addExpense(today.minusDays(2), "Transport", 250.0, "Sample entry — auto to market");
+    }
 
-        NaveenCashEntry expense = new NaveenCashEntry();
-        expense.setDate(today);
-        expense.setDirection(NaveenCashDirection.OUT);
-        expense.setCategory("Other Expense");
-        expense.setAmount(300.0);
-        expense.setNotes("Sample entry — transport");
-        cashService.addEntry(expense, "Naveen");
+    private void addExpense(LocalDate date, String category, double amount, String notes) {
+        NaveenCashEntry entry = new NaveenCashEntry();
+        entry.setDate(date);
+        entry.setDirection(NaveenCashDirection.OUT);
+        entry.setCategory(category);
+        entry.setAmount(amount);
+        entry.setNotes(notes);
+        cashService.addEntry(entry, "Naveen");
     }
 }
