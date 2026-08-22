@@ -135,27 +135,6 @@ public class CustomerService {
         return customerRepository.save(c);
     }
 
-    /**
-     * Recomputes "Days Paid" (paidInstallments) from scratch off the customer's actual payment
-     * history, instead of trusting an incrementally-maintained counter. A fully "Paid" marking
-     * counts as one installment; an "Advance" payment counts for however many installments its
-     * amount covers; "Partial"/"NotPaid" never count (a partial payment doesn't complete an
-     * installment). Recomputing from source on every change means edits, deletions, and same-day
-     * replacements can never leave the count drifted from what was actually recorded.
-     */
-    public int recomputePaidInstallments(Customer c, List<Payment> payments) {
-        double installmentAmount = c.getInstallmentAmount() == null ? 0 : c.getInstallmentAmount();
-        int count = 0;
-        for (Payment p : payments) {
-            if (p.getType() == com.fcms.model.PaymentType.Paid) {
-                count += 1;
-            } else if (p.getType() == com.fcms.model.PaymentType.Advance && p.getAmount() != null) {
-                count += installmentAmount > 0 ? Math.max(1, (int) Math.floor(p.getAmount() / installmentAmount)) : 1;
-            }
-        }
-        return count;
-    }
-
     public void recomputeDerived(Customer c) {
         // Every loan defaults to a 100-installment schedule (e.g. Rs. 1,00,000 => Rs. 1,000/day
         // for 100 days) unless the caller explicitly set a different totalInstallments.
