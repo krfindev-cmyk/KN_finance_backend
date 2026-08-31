@@ -32,8 +32,16 @@ public class CashDailyBalance {
     /** Collected Today - Spent Today, for that day alone (no carry-forward involved). */
     private Double balanceAfterSpending;
 
-    /** Yesterday's totalBalanceCarriedForward + this day's balanceAfterSpending. Becomes tomorrow's opening balance. */
+    /** Yesterday's totalBalanceCarriedForward + this day's balanceAfterSpending + manualAdjustment. Becomes tomorrow's opening balance. */
     private Double totalBalanceCarriedForward;
+
+    /**
+     * A manual correction applied on top of the naturally-computed balance for this day only,
+     * set via the "Set Balance" pencil icon. Kept separate from cash_expenses entirely, so it
+     * never shows up in or affects Collected Today / Spent Today, and can't be undone by
+     * deleting or editing an unrelated expense entry. Defaults to 0 (no correction).
+     */
+    private Double manualAdjustment;
 
     private LocalDateTime updatedAt;
 
@@ -51,6 +59,8 @@ public class CashDailyBalance {
     public void setBalanceAfterSpending(Double balanceAfterSpending) { this.balanceAfterSpending = balanceAfterSpending; }
     public Double getTotalBalanceCarriedForward() { return totalBalanceCarriedForward; }
     public void setTotalBalanceCarriedForward(Double totalBalanceCarriedForward) { this.totalBalanceCarriedForward = totalBalanceCarriedForward; }
+    public Double getManualAdjustment() { return manualAdjustment; }
+    public void setManualAdjustment(Double manualAdjustment) { this.manualAdjustment = manualAdjustment; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
 }
