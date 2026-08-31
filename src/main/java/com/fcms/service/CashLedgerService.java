@@ -15,10 +15,25 @@ import java.time.ZoneId;
 import java.util.List;
 
 /**
- * Daily cash-in-hand ledger: how much was collected that day, what the admin spent/sent out of
- * it (petrol/food allowance, salary, money sent to someone on the owner's instruction), and the
- * balance left over. Whatever isn't spent on a given day automatically carries forward as the
- * next day's opening balance — nothing needs to be manually rolled over.
+ * Daily cash-in-hand ledger.
+ *
+ * Logic:
+ *
+ * Today's Balance After Spending
+ * = Today's Collection - Today's Expenses
+ *
+ * Total Balance (Carried Forward)
+ * = Yesterday's Closing Balance (exact, including negative)
+ * + Today's Balance After Spending
+ *
+ * Negative balances carry forward automatically — if a day overspends, the shortfall rolls
+ * into the next day's opening balance exactly as-is, with no reset to zero. If a stray old
+ * entry or a one-off mistake throws the running balance off, use the "Set Balance" action
+ * (pencil icon next to Total Balance (Carried Forward) in Cash Ledger) to manually correct a
+ * specific day — that logs a visible Adjustment entry and every day after it recalculates
+ * from that corrected point forward. This is the intended combination: automatic negative
+ * carry-forward as the default math, with manual correction available as a one-time fix
+ * whenever needed.
  */
 @Service
 public class CashLedgerService {
@@ -41,35 +56,72 @@ public class CashLedgerService {
                 .sum();
     }
 
-    private double collectedBefore(LocalDate date) {
-        return paymentRepository.findAll().stream()
-                .filter(p -> p.getDate() != null && p.getDate().isBefore(date))
-                .filter(p -> p.getType() != PaymentType.NotPaid)
-                .mapToDouble(p -> p.getAmount() == null ? 0 : p.getAmount())
-                .sum();
-    }
+    /**
+     * Calculates yesterday's actual closing balance by walking forward day-by-day from the very
+     * first transaction. The running balance is NOT clamped to zero — a negative day carries its
+     * exact shortfall into the next day's opening balance.
+     *
+     * Example:
+     * Day 1: Collection 0, Expense 500 -> Closing -500
+     * Day 2: Previous balance -500 (carried through, not reset). Collection 2000, Expense 500 -> Closing 1000
+     * Day 3: Previous balance 1000. Collection 1000, Expense 500 -> Closing 1500
+     */
+    private double calculateYesterdayBalance(LocalDate date) {
+        LocalDate yesterday = date.minusDays(1);
 
-    private double expensesOn(LocalDate date) {
-        return cashExpenseRepository.findByDateOrderByCreatedAtDesc(date).stream()
-                .mapToDouble(e -> e.getAmount() == null ? 0 : e.getAmount())
-                .sum();
-    }
+        List<Payment> payments = paymentRepository.findAll();
+        List<CashExpense> expenses = cashExpenseRepository.findByDateBefore(date);
 
-    private double expensesBefore(LocalDate date) {
-        return cashExpenseRepository.findByDateBefore(date).stream()
-                .mapToDouble(e -> e.getAmount() == null ? 0 : e.getAmount())
-                .sum();
+        LocalDate firstDate = null;
+        for (Payment payment : payments) {
+            if (payment.getDate() == null || payment.getDate().isAfter(yesterday)) continue;
+            if (payment.getType() == PaymentType.NotPaid) continue;
+            if (firstDate == null || payment.getDate().isBefore(firstDate)) firstDate = payment.getDate();
+        }
+        for (CashExpense expense : expenses) {
+            if (expense.getDate() == null || expense.getDate().isAfter(yesterday)) continue;
+            if (firstDate == null || expense.getDate().isBefore(firstDate)) firstDate = expense.getDate();
+        }
+
+        if (firstDate == null) {
+            return 0;
+        }
+
+        double balance = 0;
+        LocalDate currentDate = firstDate;
+
+        while (!currentDate.isAfter(yesterday)) {
+            final LocalDate processingDate = currentDate;
+
+            double collected = payments.stream()
+                    .filter(p -> p.getDate() != null && p.getDate().equals(processingDate))
+                    .filter(p -> p.getType() != PaymentType.NotPaid)
+                    .mapToDouble(p -> p.getAmount() == null ? 0 : p.getAmount())
+                    .sum();
+
+            double spent = expenses.stream()
+                    .filter(e -> e.getDate() != null && e.getDate().equals(processingDate))
+                    .mapToDouble(e -> e.getAmount() == null ? 0 : e.getAmount())
+                    .sum();
+
+            balance = round2(balance + collected - spent);
+            currentDate = currentDate.plusDays(1);
+        }
+
+        return round2(balance);
     }
 
     /**
-     * The cash-in-hand summary for one day: opening balance (everything collected minus
-     * everything spent before this date), today's collection, today's expenses, and the
-     * resulting closing balance — which becomes tomorrow's opening balance automatically.
+     * The cash-in-hand summary for one day: opening balance (yesterday's exact closing balance,
+     * negative or positive), today's collection, today's expenses, and the resulting closing
+     * balance — which becomes tomorrow's opening balance automatically.
      */
     public CashLedgerSummary summary(LocalDate date) {
         LocalDate d = date != null ? date : LocalDate.now(IST);
 
-        double openingBalance = round2(collectedBefore(d) - expensesBefore(d));
+        double yesterdayBalance = calculateYesterdayBalance(d);
+        double openingBalance = round2(yesterdayBalance);
+
         double collectedToday = round2(collectedOn(d));
         List<CashExpense> expenses = cashExpenseRepository.findByDateOrderByCreatedAtDesc(d);
         double expensesToday = round2(expenses.stream().mapToDouble(e -> e.getAmount() == null ? 0 : e.getAmount()).sum());
