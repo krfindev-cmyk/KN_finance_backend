@@ -1,10 +1,12 @@
 package com.fcms.service;
 
 import com.fcms.dto.CashLedgerSummary;
+import com.fcms.model.CashDailyBalance;
 import com.fcms.model.CashExpense;
 import com.fcms.model.CashExpenseCategory;
 import com.fcms.model.Payment;
 import com.fcms.model.PaymentType;
+import com.fcms.repository.CashDailyBalanceRepository;
 import com.fcms.repository.CashExpenseRepository;
 import com.fcms.repository.PaymentRepository;
 import org.springframework.stereotype.Service;
@@ -13,6 +15,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Daily cash-in-hand ledger.
@@ -42,10 +45,22 @@ public class CashLedgerService {
 
     private final CashExpenseRepository cashExpenseRepository;
     private final PaymentRepository paymentRepository;
+    private final CashDailyBalanceRepository cashDailyBalanceRepository;
 
-    public CashLedgerService(CashExpenseRepository cashExpenseRepository, PaymentRepository paymentRepository) {
+    public CashLedgerService(CashExpenseRepository cashExpenseRepository, PaymentRepository paymentRepository,
+                              CashDailyBalanceRepository cashDailyBalanceRepository) {
         this.cashExpenseRepository = cashExpenseRepository;
         this.paymentRepository = paymentRepository;
+        this.cashDailyBalanceRepository = cashDailyBalanceRepository;
+    }
+
+    /** Upserts the stored closing balance for one day — this is what makes carry-forward permanent. */
+    private void storeClosingBalance(LocalDate date, double closingBalance) {
+        CashDailyBalance row = cashDailyBalanceRepository.findByDate(date).orElseGet(CashDailyBalance::new);
+        row.setDate(date);
+        row.setClosingBalance(round2(closingBalance));
+        row.setUpdatedAt(LocalDateTime.now());
+        cashDailyBalanceRepository.save(row);
     }
 
     /** Total cash actually collected on a given date (NotPaid entries contribute nothing). */
@@ -57,9 +72,14 @@ public class CashLedgerService {
     }
 
     /**
-     * Calculates yesterday's actual closing balance by walking forward day-by-day from the very
-     * first transaction. The running balance is NOT clamped to zero — a negative day carries its
-     * exact shortfall into the next day's opening balance.
+     * Calculates yesterday's actual closing balance. If yesterday's balance has already been
+     * stored in the database (either because it was computed before, or because it was set
+     * manually via setBalance), that stored value is used directly — this is what makes a
+     * manual correction on one day permanently anchor every later day, instead of being
+     * recomputed from the entire transaction history (and any old stray entries in it) every
+     * single time. Only when no stored value exists yet does it fall back to walking forward
+     * day-by-day from the very first transaction. The running balance is NOT clamped to zero —
+     * a negative day carries its exact shortfall into the next day's opening balance.
      *
      * Example:
      * Day 1: Collection 0, Expense 500 -> Closing -500
@@ -68,6 +88,11 @@ public class CashLedgerService {
      */
     private double calculateYesterdayBalance(LocalDate date) {
         LocalDate yesterday = date.minusDays(1);
+
+        Optional<CashDailyBalance> stored = cashDailyBalanceRepository.findByDate(yesterday);
+        if (stored.isPresent()) {
+            return stored.get().getClosingBalance() == null ? 0 : stored.get().getClosingBalance();
+        }
 
         List<Payment> payments = paymentRepository.findAll();
         List<CashExpense> expenses = cashExpenseRepository.findByDateBefore(date);
@@ -126,6 +151,7 @@ public class CashLedgerService {
         List<CashExpense> expenses = cashExpenseRepository.findByDateOrderByCreatedAtDesc(d);
         double expensesToday = round2(expenses.stream().mapToDouble(e -> e.getAmount() == null ? 0 : e.getAmount()).sum());
         double closingBalance = round2(openingBalance + collectedToday - expensesToday);
+        storeClosingBalance(d, closingBalance);
 
         CashLedgerSummary summary = new CashLedgerSummary();
         summary.setDate(d);
@@ -165,9 +191,10 @@ public class CashLedgerService {
      * Directly sets the Total Balance (Carried Forward) for a given day to whatever the admin
      * types in — e.g. correcting it to match cash actually counted in hand. Under the hood this
      * logs a single "Adjustment" entry for the difference (visible in the entry list like any
-     * other expense, so there's a clear audit trail of who changed it and by how much) rather
-     * than silently overwriting anything, since the balance itself isn't a stored field — it's
-     * always recomputed from collections minus expenses.
+     * other expense, so there's a clear audit trail of who changed it and by how much), then
+     * re-runs summary() so the resulting closing balance — now equal to targetBalance — gets
+     * saved into the cash_daily_balances table. That stored value becomes the fixed anchor every
+     * later day carries forward from.
      */
     public CashLedgerSummary setBalance(LocalDate date, double targetBalance, String editedBy) {
         LocalDate d = date != null ? date : LocalDate.now(IST);
