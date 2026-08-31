@@ -5,10 +5,12 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 /**
- * The stored Total Balance (Carried Forward) — i.e. the closing cash-in-hand balance — for one
- * specific day. One row per date. Once a day's balance is stored here, it becomes the fixed
- * starting point for every later day's calculation instead of being re-derived from scratch each
- * time, so a manual correction (via CashLedgerService.setBalance) sticks permanently.
+ * The stored daily cash ledger row — one per date, holding every figure the Cash Ledger page
+ * shows: Collected Today, Spent / Sent Today, Today's Balance After Spending, and Total Balance
+ * (Carried Forward). These are filled in automatically from the payments and cash_expenses
+ * tables whenever CashLedgerService.summary() runs for that date — this table is not edited
+ * directly by hand, except for totalBalanceCarriedForward via the "Set Balance" pencil icon,
+ * which anchors that one field and lets every later day carry forward from it.
  */
 @Entity
 @Table(name = "cash_daily_balances", uniqueConstraints = @UniqueConstraint(columnNames = "ledger_date"))
@@ -21,7 +23,17 @@ public class CashDailyBalance {
     @Column(name = "ledger_date", nullable = false)
     private LocalDate date;
 
-    private Double closingBalance;
+    /** Total cash collected that day (sum of payments, NotPaid excluded). */
+    private Double collectedToday;
+
+    /** Total spent/sent out that day (sum of cash_expenses, including any Adjustment entries). */
+    private Double spentToday;
+
+    /** Collected Today - Spent Today, for that day alone (no carry-forward involved). */
+    private Double balanceAfterSpending;
+
+    /** Yesterday's totalBalanceCarriedForward + this day's balanceAfterSpending. Becomes tomorrow's opening balance. */
+    private Double totalBalanceCarriedForward;
 
     private LocalDateTime updatedAt;
 
@@ -31,8 +43,14 @@ public class CashDailyBalance {
     public void setId(Long id) { this.id = id; }
     public LocalDate getDate() { return date; }
     public void setDate(LocalDate date) { this.date = date; }
-    public Double getClosingBalance() { return closingBalance; }
-    public void setClosingBalance(Double closingBalance) { this.closingBalance = closingBalance; }
+    public Double getCollectedToday() { return collectedToday; }
+    public void setCollectedToday(Double collectedToday) { this.collectedToday = collectedToday; }
+    public Double getSpentToday() { return spentToday; }
+    public void setSpentToday(Double spentToday) { this.spentToday = spentToday; }
+    public Double getBalanceAfterSpending() { return balanceAfterSpending; }
+    public void setBalanceAfterSpending(Double balanceAfterSpending) { this.balanceAfterSpending = balanceAfterSpending; }
+    public Double getTotalBalanceCarriedForward() { return totalBalanceCarriedForward; }
+    public void setTotalBalanceCarriedForward(Double totalBalanceCarriedForward) { this.totalBalanceCarriedForward = totalBalanceCarriedForward; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
 }

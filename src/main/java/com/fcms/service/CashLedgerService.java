@@ -54,11 +54,19 @@ public class CashLedgerService {
         this.cashDailyBalanceRepository = cashDailyBalanceRepository;
     }
 
-    /** Upserts the stored closing balance for one day — this is what makes carry-forward permanent. */
-    private void storeClosingBalance(LocalDate date, double closingBalance) {
+    /**
+     * Upserts the full stored ledger row for one day: Collected Today, Spent Today, Today's
+     * Balance After Spending, and Total Balance (Carried Forward) — this is what makes
+     * carry-forward permanent and gives every figure on the Cash Ledger page a database row.
+     */
+    private void storeDailyLedger(LocalDate date, double collectedToday, double spentToday,
+                                   double balanceAfterSpending, double totalBalanceCarriedForward) {
         CashDailyBalance row = cashDailyBalanceRepository.findByDate(date).orElseGet(CashDailyBalance::new);
         row.setDate(date);
-        row.setClosingBalance(round2(closingBalance));
+        row.setCollectedToday(round2(collectedToday));
+        row.setSpentToday(round2(spentToday));
+        row.setBalanceAfterSpending(round2(balanceAfterSpending));
+        row.setTotalBalanceCarriedForward(round2(totalBalanceCarriedForward));
         row.setUpdatedAt(LocalDateTime.now());
         cashDailyBalanceRepository.save(row);
     }
@@ -91,7 +99,8 @@ public class CashLedgerService {
 
         Optional<CashDailyBalance> stored = cashDailyBalanceRepository.findByDate(yesterday);
         if (stored.isPresent()) {
-            return stored.get().getClosingBalance() == null ? 0 : stored.get().getClosingBalance();
+            Double v = stored.get().getTotalBalanceCarriedForward();
+            return v == null ? 0 : v;
         }
 
         List<Payment> payments = paymentRepository.findAll();
@@ -150,8 +159,9 @@ public class CashLedgerService {
         double collectedToday = round2(collectedOn(d));
         List<CashExpense> expenses = cashExpenseRepository.findByDateOrderByCreatedAtDesc(d);
         double expensesToday = round2(expenses.stream().mapToDouble(e -> e.getAmount() == null ? 0 : e.getAmount()).sum());
-        double closingBalance = round2(openingBalance + collectedToday - expensesToday);
-        storeClosingBalance(d, closingBalance);
+        double balanceAfterSpending = round2(collectedToday - expensesToday);
+        double closingBalance = round2(openingBalance + balanceAfterSpending);
+        storeDailyLedger(d, collectedToday, expensesToday, balanceAfterSpending, closingBalance);
 
         CashLedgerSummary summary = new CashLedgerSummary();
         summary.setDate(d);
